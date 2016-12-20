@@ -45,6 +45,7 @@ extern const struct flash_driver fm3_flash;
 extern const struct flash_driver fm4_flash;
 extern const struct flash_driver fespi_flash;
 extern const struct flash_driver jtagspi_flash;
+extern const struct flash_driver ht32f165x_flash;
 extern const struct flash_driver kinetis_flash;
 extern const struct flash_driver kinetis_ke_flash;
 extern const struct flash_driver lpc2000_flash;
@@ -118,6 +119,7 @@ static const struct flash_driver * const flash_drivers[] = {
 	&fm3_flash,
 	&fm4_flash,
 	&fespi_flash,
+    	&ht32f165x_flash,
 	&jtagspi_flash,
 	&kinetis_flash,
 	&kinetis_ke_flash,
@@ -167,9 +169,9 @@ static const struct flash_driver * const flash_drivers[] = {
 
 const struct flash_driver *flash_driver_find_by_name(const char *name)
 {
-	for (unsigned i = 0; flash_drivers[i]; i++) {
-		if (strcmp(name, flash_drivers[i]->name) == 0)
-			return flash_drivers[i];
-	}
-	return NULL;
+    for (unsigned i = 0; flash_drivers[i]; i++) {
+        if (strcmp(name, flash_drivers[i]->name) == 0)
+            return flash_drivers[i];
+    }
+    return NULL;
 }

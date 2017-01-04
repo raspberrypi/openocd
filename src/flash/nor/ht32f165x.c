@@ -51,18 +51,17 @@ static int ht32f165x_wait_status_busy(struct flash_bank *bank, int timeout)
     uint32_t status;
     int retval = ERROR_OK;
 
-    /* wait for busy to clear */
+    // wait for flash operation finished
     for (;;) {
         retval = ht32f165x_get_flash_status(bank, &status);
         if (retval != ERROR_OK)
             return retval;
-//        LOG_DEBUG("status: 0x%" PRIx32 "", status);
 
         if ((status & FMC_OPM_MASK) == FMC_FINISHED)
             return ERROR_OK;
 
         if (timeout-- <= 0) {
-            LOG_ERROR("timed out waiting for flash: 0x%04x", status);
+            LOG_ERROR("Timed out waiting for flash: 0x%04x", status);
             return ERROR_FAIL;
         }
         alive_sleep(10);
@@ -75,7 +74,7 @@ static int ht32f165x_erase(struct flash_bank *bank, int first, int last)
 {
     struct target *target = bank->target;
 
-    LOG_INFO("ht32f165x erase: %d - %d", first, last);
+    LOG_DEBUG("ht32f165x erase: %d - %d", first, last);
 
     if (target->state != TARGET_HALTED) {
         LOG_ERROR("Target not halted");
@@ -99,7 +98,7 @@ static int ht32f165x_erase(struct flash_bank *bank, int first, int last)
         if (retval != ERROR_OK)
             return retval;
 
-        LOG_INFO("ht32f165x erased page %d", i);
+        LOG_DEBUG("ht32f165x erased page %d", i);
         bank->sectors[i].is_erased = 1;
     }
 
@@ -116,7 +115,7 @@ static int ht32f165x_write(struct flash_bank *bank, const uint8_t *buffer,
 {
     struct target *target = bank->target;
 
-    LOG_INFO("ht32f165x flash write: 0x%x 0x%x", offset, count);
+    LOG_DEBUG("ht32f165x flash write: 0x%x 0x%x", offset, count);
 
     if (target->state != TARGET_HALTED) {
         LOG_ERROR("Target not halted");
@@ -135,16 +134,12 @@ static int ht32f165x_write(struct flash_bank *bank, const uint8_t *buffer,
 
     uint32_t addr = offset;
     for(uint32_t i = 0; i < count; i += 4){
-//        uint32_t word = (buffer[i]   << 24) |
-//                        (buffer[i+1] << 16) |
-//                        (buffer[i+2] << 8) |
-//                        (buffer[i+3] << 0);
         uint32_t word = (buffer[i]   << 0) |
                         (buffer[i+1] << 8) |
                         (buffer[i+2] << 16) |
                         (buffer[i+3] << 24);
 
-        LOG_INFO("ht32f165x flash write word 0x%x 0x%x 0x%08x", i, addr, word);
+        LOG_DEBUG("ht32f165x flash write word 0x%x 0x%x 0x%08x", i, addr, word);
 
         // flash memory word program
         int retval;
@@ -168,21 +163,21 @@ static int ht32f165x_write(struct flash_bank *bank, const uint8_t *buffer,
         addr += 4;
     }
 
-    LOG_INFO("ht32f165x flash write success");
+    LOG_DEBUG("ht32f165x flash write success");
     return ERROR_OK;
 }
 
 static int ht32f165x_probe(struct flash_bank *bank)
 {
-    // Only 128KB version
-    int num_pages = 128;
     int page_size = 1024;
+    int num_pages = bank->size / page_size;
+
+    LOG_INFO("ht32f165x probe: %d pages, 0x%x bytes, 0x%x total", num_pages, page_size, bank->size);
 
     if(bank->sectors)
         free(bank->sectors);
 
     bank->base = 0x0;
-    bank->size = num_pages * page_size;
     bank->num_sectors = num_pages;
     bank->sectors = malloc(sizeof(struct flash_sector) * num_pages);
 

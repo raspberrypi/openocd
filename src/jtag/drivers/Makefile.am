@@ -179,6 +179,9 @@ endif
 if KITPROG
 DRIVERFILES += %D%/kitprog.c
 endif
+if PICOPROBE
+DRIVERFILES += %D%/picoprobe.c
+endif
 if XDS110
 DRIVERFILES += %D%/xds110.c
 endif

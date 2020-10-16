@@ -38,6 +38,7 @@
 #include "register.h"
 #include "arm_opcodes.h"
 #include "arm_semihosting.h"
+#include "smp.h"
 #include <helper/time_support.h>
 #include <rtt/rtt.h>
 
@@ -570,6 +571,78 @@ static int cortex_m_debug_entry(struct target *target)
 	return ERROR_OK;
 }
 
+static struct target *get_cortex_m(struct target *target, int32_t coreid)
+{
+	struct target_list *head;
+	struct target *curr;
+
+	foreach_smp_target(head, target->head) {
+		curr = head->target;
+		if ((curr->coreid == coreid) && (curr->state == TARGET_HALTED))
+			return curr;
+	}
+	return target;
+}
+
+static int cortex_m_halt(struct target *target);
+static int cortex_m_poll(struct target *target);
+
+static int cortex_m_halt_smp(struct target *target)
+{
+	int retval = 0;
+	struct target_list *head;
+	struct target *curr;
+	foreach_smp_target(head, target->head) {
+		curr = head->target;
+		if ((curr != target) && (curr->state != TARGET_HALTED)
+			&& target_was_examined(curr))
+			retval += cortex_m_halt(curr);
+	}
+	return retval;
+}
+
+static int update_halt_gdb(struct target *target)
+{
+	struct target *gdb_target = NULL;
+	struct target_list *head;
+	struct target *curr;
+	int retval = 0;
+
+	if (target->gdb_service && target->gdb_service->core[0] == -1) {
+		target->gdb_service->target = target;
+		target->gdb_service->core[0] = target->coreid;
+		retval += cortex_m_halt_smp(target);
+	}
+
+	if (target->gdb_service)
+		gdb_target = target->gdb_service->target;
+
+	foreach_smp_target(head, target->head) {
+		curr = head->target;
+		/* skip calling context */
+		if (curr == target)
+			continue;
+		if (!target_was_examined(curr))
+			continue;
+		/* skip targets that were already halted */
+		if (curr->state == TARGET_HALTED)
+			continue;
+		/* Skip gdb_target; it alerts GDB so has to be polled as last one */
+		if (curr == gdb_target)
+			continue;
+
+		/* avoid recursion in cortex_m_poll() */
+		curr->smp = 0;
+		cortex_m_poll(curr);
+		curr->smp = 1;
+	}
+
+	/* after all targets were updated, poll the gdb serving target */
+	if (gdb_target != NULL && gdb_target != target)
+		cortex_m_poll(gdb_target);
+	return retval;
+}
+
 static int cortex_m_poll(struct target *target)
 {
 	int detected_failure = ERROR_OK;
@@ -578,6 +651,18 @@ static int cortex_m_poll(struct target *target)
 	struct cortex_m_common *cortex_m = target_to_cm(target);
 	struct armv7m_common *armv7m = &cortex_m->armv7m;
 
+	/*  toggle to another core is done by gdb as follow */
+	/*  maint packet J core_id */
+	/*  continue */
+	/*  the next polling trigger an halt event sent to gdb */
+	if ((target->state == TARGET_HALTED) && (target->smp) &&
+		(target->gdb_service) &&
+		(target->gdb_service->target == NULL)) {
+		target->gdb_service->target =
+				get_cortex_m(target, target->gdb_service->core[1]);
+		target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+		return retval;
+	}
 	/* Read from Debug Halting Control and Status Register */
 	retval = mem_ap_read_atomic_u32(armv7m->debug_ap, DCB_DHCSR, &cortex_m->dcb_dhcsr);
 	if (retval != ERROR_OK) {
@@ -636,6 +721,12 @@ static int cortex_m_poll(struct target *target)
 			if (retval != ERROR_OK)
 				return retval;
 
+			if (target->smp) {
+				retval = update_halt_gdb(target);
+				if (retval != ERROR_OK)
+					return retval;
+			}
+
 			if (arm_semihosting(target, &retval) != 0)
 				return retval;
 
@@ -646,6 +737,12 @@ static int cortex_m_poll(struct target *target)
 			retval = cortex_m_debug_entry(target);
 			if (retval != ERROR_OK)
 				return retval;
+
+			if (target->smp) {
+				retval = update_halt_gdb(target);
+				if (retval != ERROR_OK)
+					return retval;
+			}
 
 			target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
 		}
@@ -789,8 +886,8 @@ void cortex_m_enable_breakpoints(struct target *target)
 	}
 }
 
-static int cortex_m_resume(struct target *target, int current,
-	target_addr_t address, int handle_breakpoints, int debug_execution)
+static int cortex_m_internal_restore(struct target *target, int current,
+	target_addr_t *address, int handle_breakpoints, int debug_execution)
 {
 	struct armv7m_common *armv7m = target_to_armv7m(target);
 	struct breakpoint *breakpoint = NULL;
@@ -840,7 +937,7 @@ static int cortex_m_resume(struct target *target, int current,
 	/* current = 1: continue on current pc, otherwise continue at <address> */
 	r = armv7m->arm.pc;
 	if (!current) {
-		buf_set_u32(r->value, 0, 32, address);
+		buf_set_u32(r->value, 0, 32, *address);
 		r->dirty = true;
 		r->valid = true;
 	}
@@ -854,6 +951,8 @@ static int cortex_m_resume(struct target *target, int current,
 		armv7m_maybe_skip_bkpt_inst(target, NULL);
 
 	resume_pc = buf_get_u32(r->value, 0, 32);
+	if (current)
+		*address = resume_pc;
 
 	armv7m_restore_context(target);
 
@@ -871,15 +970,67 @@ static int cortex_m_resume(struct target *target, int current,
 		}
 	}
 
+	return ERROR_OK;
+}
+
+static int cortex_m_internal_restart(struct target *target)
+{
+	struct armv7m_common *armv7m = target_to_armv7m(target);
+
 	/* Restart core */
 	cortex_m_set_maskints_for_run(target);
 	cortex_m_write_debug_halt_mask(target, 0, C_HALT);
 
 	target->debug_reason = DBG_REASON_NOTHALTED;
+	target->state = TARGET_RUNNING;
 
 	/* registers are now invalid */
 	register_cache_invalidate(armv7m->arm.core_cache);
 
+	return ERROR_OK;
+}
+
+static int cortex_m_restore_smp(struct target *target, int handle_breakpoints)
+{
+	int retval = 0;
+	struct target_list *head;
+	struct target *curr;
+	target_addr_t address;
+	foreach_smp_target(head, target->head) {
+		curr = head->target;
+		if ((curr != target) && (curr->state != TARGET_RUNNING)
+			&& target_was_examined(curr)) {
+			/*  resume current address , not in step mode */
+			retval += cortex_m_internal_restore(curr, 1, &address,
+												handle_breakpoints, 0);
+			retval += cortex_m_internal_restart(curr);
+		}
+	}
+	return retval;
+}
+
+static int cortex_m_resume(struct target *target, int current,
+						   target_addr_t address, int handle_breakpoints, int debug_execution)
+{
+	int retval = 0;
+	/* dummy resume for smp toggle in order to reduce gdb impact  */
+	if ((target->smp) && (target->gdb_service->core[1] != -1)) {
+		/*   simulate a start and halt of target */
+		target->gdb_service->target = NULL;
+		target->gdb_service->core[0] = target->gdb_service->core[1];
+		/*  fake resume at next poll we play the  target core[1], see poll*/
+		target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
+		return 0;
+	}
+	cortex_m_internal_restore(target, current, &address, handle_breakpoints, debug_execution);
+	if (target->smp) {
+		target->gdb_service->core[0] = -1;
+		retval = cortex_m_restore_smp(target, handle_breakpoints);
+		if (retval != ERROR_OK)
+			return retval;
+	}
+	cortex_m_internal_restart(target);
+	uint32_t resume_pc = (uint32_t)address;
 	if (!debug_execution) {
 		target->state = TARGET_RUNNING;
 		target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
@@ -1952,6 +2103,7 @@ int cortex_m_examine(struct target *target)
 				LOG_ERROR("Could not find MEM-AP to control the core");
 				return retval;
 			}
+
 		} else {
 			armv7m->debug_ap = dap_ap(swjdp, cortex_m->apsel);
 		}
@@ -2409,6 +2561,27 @@ COMMAND_HANDLER(handle_cortex_m_mask_interrupts_command)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(cortex_m_handle_smp_gdb_command)
+{
+	struct target *target = get_current_target(CMD_CTX);
+	int retval = ERROR_OK;
+	struct target_list *head;
+	head = target->head;
+	if (head != (struct target_list *)NULL) {
+		if (CMD_ARGC == 1) {
+			int coreid = 0;
+			COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], coreid);
+			if (ERROR_OK != retval)
+				return retval;
+			target->gdb_service->core[1] = coreid;
+
+		}
+		command_print(CMD, "gdb coreid  %" PRId32 " -> %" PRId32, target->gdb_service->core[0]
+				, target->gdb_service->core[1]);
+	}
+	return ERROR_OK;
+}
+
 COMMAND_HANDLER(handle_cortex_m_reset_config_command)
 {
 	struct target *target = get_current_target(CMD_CTX);
@@ -2456,6 +2629,13 @@ COMMAND_HANDLER(handle_cortex_m_reset_config_command)
 
 static const struct command_registration cortex_m_exec_command_handlers[] = {
 	{
+		.name = "smp_gdb",
+		.handler = cortex_m_handle_smp_gdb_command,
+		.mode = COMMAND_EXEC,
+		.help = "display/fix current core played to gdb",
+		.usage = "",
+	},
+	{
 		.name = "maskisr",
 		.handler = handle_cortex_m_mask_interrupts_command,
 		.mode = COMMAND_EXEC,
@@ -2475,6 +2655,9 @@ static const struct command_registration cortex_m_exec_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.help = "configure software reset handling",
 		.usage = "['sysresetreq'|'vectreset']",
+	},
+	{
+		.chain = smp_command_handlers,
 	},
 	COMMAND_REGISTRATION_DONE
 };

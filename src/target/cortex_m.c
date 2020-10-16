@@ -694,6 +694,7 @@ static int cortex_m_poll(struct target *target)
 		if (target->state != TARGET_RESET) {
 			target->state = TARGET_RESET;
 			LOG_INFO("%s: external reset detected", target_name(target));
+			register_cache_invalidate(armv7m->arm.core_cache);
 		}
 		return ERROR_OK;
 	}
@@ -2101,6 +2102,7 @@ int cortex_m_examine(struct target *target)
 			retval = cortex_m_find_mem_ap(swjdp, &armv7m->debug_ap);
 			if (retval != ERROR_OK) {
 				LOG_ERROR("Could not find MEM-AP to control the core");
+				swjdp->do_reconnect = true;
 				return retval;
 			}
 

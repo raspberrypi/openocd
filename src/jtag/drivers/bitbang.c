@@ -427,6 +427,8 @@ static int bitbang_swd_switch_seq(enum swd_special_seq seq)
 
 	switch (seq) {
 	case LINE_RESET:
+		LOG_DEBUG_IO("SWD line reset");
+		bitbang_swd_exchange(false, (uint8_t *)swd_seq_line_reset, 0, swd_seq_line_reset_len);
 		LOG_DEBUG("SWD line reset");
 		bitbang_swd_exchange(false, (uint8_t *)swd_seq_line_reset, 0, swd_seq_line_reset_len);
 		break;
@@ -437,6 +439,14 @@ static int bitbang_swd_switch_seq(enum swd_special_seq seq)
 	case SWD_TO_JTAG:
 		LOG_DEBUG("SWD-to-JTAG");
 		bitbang_swd_exchange(false, (uint8_t *)swd_seq_swd_to_jtag, 0, swd_seq_swd_to_jtag_len);
+		break;
+	case DORMANT_TO_SWD:
+		LOG_DEBUG("DORMANT-to-SWD");
+		bitbang_swd_exchange(false, (uint8_t *)swd_seq_dormant_to_swd, 0, swd_seq_dormant_to_swd_len);
+		break;
+	case SWD_TO_DORMANT:
+		LOG_DEBUG("SWD-to-DORMANT");
+		bitbang_swd_exchange(false, (uint8_t *) swd_seq_swd_to_dormant, 0, swd_seq_swd_to_dormant_len);
 		break;
 	default:
 		LOG_ERROR("Sequence %d not supported", seq);
@@ -531,6 +541,11 @@ static void bitbang_swd_write_reg(uint8_t cmd, uint32_t value, uint32_t ap_delay
 
 		bitbang_interface->swdio_drive(false);
 		bitbang_swd_exchange(true, trn_ack_data_parity_trn, 0, 1 + 3 + 1);
+		if (0 == ((cmd ^ swd_cmd(false, false, DP_TARGETSEL)) &
+				  (SWD_CMD_APnDP|SWD_CMD_RnW|SWD_CMD_A32))) {
+			/* Targetsel has no ack so force it */
+			buf_set_u32(trn_ack_data_parity_trn, 1, 3, SWD_ACK_OK);
+		}
 		bitbang_interface->swdio_drive(true);
 		bitbang_swd_exchange(false, trn_ack_data_parity_trn, 1 + 3 + 1, 32 + 1);
 

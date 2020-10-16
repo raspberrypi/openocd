@@ -277,5 +277,8 @@ struct swd_driver {
 };
 
 int swd_init_reset(struct command_context *cmd_ctx);
+void swd_add_reset(int req_srst);
+int swd_create_transport_session(struct adiv5_dap *dap, const struct dap_ops **dap_ops,
+		void **transport_private);
 
 #endif /* OPENOCD_JTAG_SWD_H */

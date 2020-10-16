@@ -682,7 +682,7 @@ static int cortex_m_poll(struct target *target)
 		/* We have to execute the rest (the "finally" equivalent, but
 		 * still throw this exception again).
 		 */
-		detected_failure = ERROR_FAIL;
+		detected_failure = ERROR_STICKY_CLEARED;
 
 		/* refresh status bits */
 		retval = mem_ap_read_atomic_u32(armv7m->debug_ap, DCB_DHCSR, &cortex_m->dcb_dhcsr);

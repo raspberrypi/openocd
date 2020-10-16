@@ -3010,6 +3010,10 @@ static int handle_target(void *priv)
 		if (!powerDropout && !srstAsserted) {
 			/* polling may fail silently until the target has been examined */
 			retval = target_poll(target);
+			if (retval == ERROR_STICKY_CLEARED) {
+				/* retry if a sticky error was cleared */
+				retval = target_poll(target);
+			}
 			if (retval != ERROR_OK) {
 				/* 100ms polling interval. Increase interval between polling up to 5000ms */
 				if (target->backoff.times * polling_interval < 5000) {
@@ -3230,6 +3234,10 @@ int target_wait_state(struct target *target, enum target_state state, int ms)
 
 	for (;;) {
 		retval = target_poll(target);
+		if (retval == ERROR_STICKY_CLEARED) {
+			/* retry if a sticky error was cleared */
+			retval = target_poll(target);
+		}
 		if (retval != ERROR_OK)
 			return retval;
 		if (target->state == state)

@@ -226,7 +226,7 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	return err;
 }
 
-static int rp2040_flash_erase(struct flash_bank *bank, uint first, uint last)
+static int rp2040_flash_erase(struct flash_bank *bank, unsigned int first, unsigned int last)
 {
 	struct rp2040_flash_bank *priv = bank->driver_priv;
 	uint32_t start_addr = bank->sectors[first].offset;
@@ -255,8 +255,8 @@ static int rp2040_flash_erase(struct flash_bank *bank, uint first, uint last)
 
 	// Erase in naturally-aligned chunks of n sectors per call. Get speed of
 	// block erases, without timeout on large erase ranges:
-	const uint erase_sectors_per_call = 4 * BLOCK_SIZE / SECTOR_SIZE;
-	uint first_of_call, last_of_call;
+	const unsigned int erase_sectors_per_call = 4 * BLOCK_SIZE / SECTOR_SIZE;
+	unsigned int first_of_call, last_of_call;
 	for (first_of_call = first; first_of_call <= last; first_of_call = last_of_call + 1)
 	{
 		// Try to keep our erase calls block-aligned, to avoid degeneration to
@@ -287,7 +287,7 @@ static int rp2040_flash_protect_check(struct flash_bank *bank)
 	return ERROR_OK;
 }
 
-static int rp2040_flash_protect(struct flash_bank *bank, int set, uint first, uint last)
+static int rp2040_flash_protect(struct flash_bank *bank, int set, unsigned int first, unsigned int last)
 {
 	LOG_WARNING("RP2040 Flash Protect (ignored)");
 	return ERROR_OK;
@@ -304,7 +304,7 @@ static int rp2040_flash_probe(struct flash_bank *bank)
 	LOG_INFO("RP2040 B0 Flash Probe: %d bytes @%08x, in %d sectors\n", bank->size, (uint32_t)bank->base, bank->num_sectors);
 	bank->sectors = malloc(sizeof(struct flash_sector) * bank->num_sectors);
 
-	for (uint i = 0; i < bank->num_sectors; i++) {
+	for (unsigned int i = 0; i < bank->num_sectors; i++) {
 		bank->sectors[i].offset = i * SECTOR_SIZE;
 		bank->sectors[i].size = SECTOR_SIZE;
 		bank->sectors[i].is_erased = -1;

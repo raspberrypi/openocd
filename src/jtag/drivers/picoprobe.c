@@ -110,7 +110,7 @@ static int picoprobe_bulk_write(struct probe_pkt_hdr *pkt_hdr, uint8_t *pkt)
 
 static int picoprobe_flush(void)
 {
-	LOG_DEBUG_IO("Flush %d transactions", picoprobe_queue_length);
+	LOG_DEBUG_IO("Flush %zu transactions", picoprobe_queue_length);
 	int ret = ERROR_OK;
 
 	struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)picoprobe_handle->packet_buffer;
@@ -121,12 +121,12 @@ static int picoprobe_flush(void)
 	unsigned total_reads = 0;
 	unsigned total_read_bytes = 0;
 
-	for (unsigned i = 0; i < picoprobe_queue_length; i++) {
+	for (size_t i = 0; i < picoprobe_queue_length; i++) {
 		/* Copy header regardless of read or write */
 		struct picoprobe_queue_entry *q = &picoprobe_queue[i];
 		struct probe_cmd_hdr *hdr = (struct probe_cmd_hdr *)pkt;
 		if (q->id != i) {
-			LOG_ERROR("Wrong queue id. q->id %d != %d", q->id, i);
+			LOG_ERROR("Wrong queue id. q->id %d != %zu", q->id, i);
 			return ERROR_JTAG_DEVICE_ERROR;
 		}
 		hdr->id = q->id;
@@ -230,7 +230,7 @@ static int picoprobe_read_write_bits(const uint8_t *buf, unsigned offset, unsign
 		LOG_ERROR("Picoprobe queue full");
 		return ERROR_BUF_TOO_SMALL;
 	} else {
-		LOG_DEBUG_IO("Picoprobe queue len %d -> %d", picoprobe_queue_length,
+		LOG_DEBUG_IO("Picoprobe queue len %zu -> %zu", picoprobe_queue_length,
 		picoprobe_queue_length + 1);
 	}
 
@@ -282,7 +282,7 @@ static int picoprobe_swd_run_queue(void)
 
 		LOG_DEBUG_IO("trn_ack_data_parity_trn:");
 		for (size_t y = 0; y < sizeof(swd_cmd_queue[i].trn_ack_data_parity_trn); y++)
-			LOG_DEBUG_IO("BYTE %d 0x%x", y, swd_cmd_queue[i].trn_ack_data_parity_trn[y]);
+			LOG_DEBUG_IO("BYTE %zu 0x%x", y, swd_cmd_queue[i].trn_ack_data_parity_trn[y]);
 
 		int ack = buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1, 3);
 

@@ -110,7 +110,7 @@ static int picoprobe_bulk_write(struct probe_pkt_hdr *pkt_hdr, uint8_t *pkt)
 
 static int picoprobe_flush(void)
 {
-	LOG_DEBUG_IO("Flush %d transactions", picoprobe_queue_length);
+	LOG_DEBUG_IO("Flush %d transactions", (int)picoprobe_queue_length);
 	int ret = ERROR_OK;
 
 	struct probe_pkt_hdr *pkt_hdr = (struct probe_pkt_hdr *)picoprobe_handle->packet_buffer;
@@ -230,8 +230,8 @@ static int picoprobe_read_write_bits(const uint8_t *buf, unsigned offset, unsign
 		LOG_ERROR("Picoprobe queue full");
 		return ERROR_BUF_TOO_SMALL;
 	} else {
-		LOG_DEBUG_IO("Picoprobe queue len %d -> %d", picoprobe_queue_length,
-		picoprobe_queue_length + 1);
+		LOG_DEBUG_IO("Picoprobe queue len %d -> %d", (int)picoprobe_queue_length,
+					 (int)picoprobe_queue_length + 1);
 	}
 
 	struct picoprobe_queue_entry *q = &picoprobe_queue[picoprobe_queue_length];
@@ -282,7 +282,7 @@ static int picoprobe_swd_run_queue(void)
 
 		LOG_DEBUG_IO("trn_ack_data_parity_trn:");
 		for (size_t y = 0; y < sizeof(swd_cmd_queue[i].trn_ack_data_parity_trn); y++)
-			LOG_DEBUG_IO("BYTE %d 0x%x", y, swd_cmd_queue[i].trn_ack_data_parity_trn[y]);
+			LOG_DEBUG_IO("BYTE %d 0x%x", (int)y, swd_cmd_queue[i].trn_ack_data_parity_trn[y]);
 
 		int ack = buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1, 3);
 

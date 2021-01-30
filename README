@@ -332,4 +332,3 @@ the repository or to download arbitrary snapshots using HTTP:
 
 Snapshots are compressed tarballs of the source tree, about 1.3 MBytes
 each at this writing.
-

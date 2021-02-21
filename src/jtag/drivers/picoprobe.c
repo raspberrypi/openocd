@@ -26,6 +26,7 @@
 #include <jtag/swd.h>
 #include <jtag/commands.h>
 
+#include <helper/command.h>
 #include "libusb_helper.h"
 
 #define VID 0x2E8A /* Raspberry Pi */
@@ -477,11 +478,51 @@ static const struct swd_driver picoprobe_swd = {
 	.run = picoprobe_swd_run_queue,
 };
 
+const char *useSerialNumber = NULL;
+static COMMAND_HELPER(handle_serialnum_args, const char **serialNumber)
+{
+  if(CMD_ARGC != 1)
+  {
+    LOG_ERROR("%s: need single argument with serial number", CMD_NAME);
+    *serialNumber = NULL;
+    return ERROR_COMMAND_SYNTAX_ERROR;
+  }
+  else 
+  {
+    *serialNumber = CMD_ARGV[0];
+    return ERROR_OK;
+  }
+}
+COMMAND_HANDLER(handle_serialnum_command)
+{
+  const char *serialNumber = NULL;
+  int retval = CALL_COMMAND_HANDLER(handle_serialnum_args, &serialNumber);
+  if (ERROR_OK == retval)
+  {
+    useSerialNumber = malloc(strlen(serialNumber)+1);
+    if(useSerialNumber)
+    {
+      strcpy((char *)useSerialNumber, (char *)serialNumber);
+      command_print(CMD, "Using serial number : %s", serialNumber);
+    }
+  }
+  return retval;
+}
+static const struct command_registration serialnum_command_handlers[] = {
+  {
+    .name = "pico_serialnum",
+    .mode = COMMAND_ANY,
+    .handler = handle_serialnum_command,
+    .help = "use picoprobe with this serial number",
+    .usage = "'serial number'",
+  },
+  COMMAND_REGISTRATION_DONE
+};
 static const char * const picoprobe_transports[] = { "swd", NULL };
 
 struct adapter_driver picoprobe_adapter_driver = {
 	.name = "picoprobe",
-	.commands = NULL,
+	.commands = serialnum_command_handlers,
 	.transports = picoprobe_transports,
 	.swd_ops = &picoprobe_swd,
 	.init = picoprobe_init,
@@ -497,7 +538,7 @@ static int picoprobe_usb_open(void)
 	const uint16_t vids[] = { VID, 0 };
 	const uint16_t pids[] = { PID, 0 };
 
-	if (jtag_libusb_open(vids, pids, NULL,
+	if (jtag_libusb_open(vids, pids, useSerialNumber,
 			&picoprobe_handle->usb_handle, NULL) != ERROR_OK) {
 		LOG_ERROR("Failed to open or find the device");
 		return ERROR_FAIL;

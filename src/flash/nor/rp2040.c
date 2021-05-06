@@ -172,7 +172,6 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		return ERROR_TARGET_UNALIGNED_ACCESS;
 	}
 
-	// This is a good place to do this because flash erase always follows a reset init
 	LOG_DEBUG("Connecting internal flash");
 	err = rp2040_call_rom_func(bank->target, priv->stacktop, FUNC_CONNECT_INTERNAL_FLASH, NULL, 0);
 	if (err != ERROR_OK)
@@ -250,7 +249,6 @@ static int rp2040_flash_erase(struct flash_bank *bank, unsigned int first, unsig
 	uint32_t length = bank->sectors[last].offset + bank->sectors[last].size - start_addr;
 	LOG_DEBUG("RP2040 erase %d bytes starting at 0x%08x", length, start_addr);
 
-	// This is a good place to do this because flash erase always follows a reset init
 	LOG_DEBUG("Connecting internal flash");
 	int err = rp2040_call_rom_func(bank->target, priv->stacktop, FUNC_CONNECT_INTERNAL_FLASH, NULL, 0);
 	if (err != ERROR_OK)

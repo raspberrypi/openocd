@@ -210,10 +210,9 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		return ERROR_TARGET_UNALIGNED_ACCESS;
 	}
 
-	err = rp2040_flash_exit_xip (bank);
+	err = rp2040_flash_exit_xip(bank);
 	if (err != ERROR_OK)
 	{
-		LOG_ERROR("RP2040 write: failed to exit flash XIP mode");
 		return err;
 	}
 
@@ -263,11 +262,7 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		return err;
 	}
 
-	err = rp2040_flash_enter_xip (bank);
-	if (err != ERROR_OK)
-	{
-		LOG_ERROR("RP2040 write: failed to enter flash XIP mode");
-	}
+	err = rp2040_flash_enter_xip(bank);
 
 	return err;
 }
@@ -281,10 +276,9 @@ static int rp2040_flash_erase(struct flash_bank *bank, unsigned int first, unsig
 
 	LOG_DEBUG("RP2040 erase %d bytes starting at 0x%08x", length, start_addr);
 
-	err = rp2040_flash_exit_xip (bank);
+	err = rp2040_flash_exit_xip(bank);
 	if (err != ERROR_OK)
 	{
-		LOG_ERROR("RP2040 write: failed to exit flash XIP mode");
 		return err;
 	}
 
@@ -316,11 +310,7 @@ static int rp2040_flash_erase(struct flash_bank *bank, unsigned int first, unsig
 		}
 	}
 
-	err = rp2040_flash_enter_xip (bank);
-	if (err != ERROR_OK)
-	{
-		LOG_ERROR("RP2040 write: failed to enter flash XIP mode");
-	}
+	err = rp2040_flash_enter_xip(bank);
 
 	return err;
 }

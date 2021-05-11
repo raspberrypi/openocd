@@ -189,7 +189,7 @@ static int rp2040_flash_enter_xip(struct flash_bank *bank)
 	err = rp2040_call_rom_func(bank->target, priv->stacktop, FUNC_FLASH_ENTER_CMD_XIP, NULL, 0);
 	if (err != ERROR_OK)
 	{
-		LOG_ERROR("RP2040 enter xip: failed enter flash XIP mode");
+		LOG_ERROR("RP2040 enter xip: failed to enter flash XIP mode");
 	}
 	return err;
 }

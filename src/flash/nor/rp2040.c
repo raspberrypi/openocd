@@ -138,6 +138,30 @@ static int rp2040_call_rom_func(struct target *target, struct rp2040_flash_bank 
 
 }
 
+static int rp2040_flash_exit_xip(struct flash_bank *bank)
+{
+	struct rp2040_flash_bank *priv = bank->driver_priv;
+	int err = ERROR_OK;
+
+	LOG_DEBUG("Connecting internal flash");
+	err = rp2040_call_rom_func(bank->target, priv, priv->jump_connect_internal_flash, NULL, 0);
+	if (err != ERROR_OK)
+	{
+		LOG_ERROR("RP2040 exit xip: failed to connect internal flash");
+		return err;
+	}
+
+	LOG_DEBUG("Kicking flash out of XIP mode");
+	err = rp2040_call_rom_func(bank->target, priv, priv->jump_flash_exit_xip, NULL, 0);
+	if (err != ERROR_OK)
+	{
+		LOG_ERROR("RP2040 exit xip: failed to exit flash XIP mode");
+		return err;
+	}
+
+	return err;
+}
+
 static int stack_grab_and_prep(struct flash_bank *bank)
 {
 	struct rp2040_flash_bank *priv = bank->driver_priv;
@@ -150,21 +174,22 @@ static int stack_grab_and_prep(struct flash_bank *bank)
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
-	LOG_DEBUG("Connecting internal flash");
-	err = rp2040_call_rom_func(bank->target, priv, priv->jump_connect_internal_flash, NULL, 0);
-	if (err != ERROR_OK) {
-		LOG_ERROR("RP2040 erase: failed to connect internal flash");
-		return err;
-	}
+	return rp2040_flash_exit_xip(bank);
+}
 
-	LOG_DEBUG("Kicking flash out of XIP mode");
-	err = rp2040_call_rom_func(bank->target, priv, priv->jump_flash_exit_xip, NULL, 0);
-	if (err != ERROR_OK) {
-		LOG_ERROR("RP2040 erase: failed to exit flash XIP mode");
-		return err;
-	}
 
-	return ERROR_OK;
+static int rp2040_flash_enter_xip(struct flash_bank *bank)
+{
+	struct rp2040_flash_bank *priv = bank->driver_priv;
+	int err = ERROR_OK;
+
+	LOG_DEBUG("Configuring SSI for execute-in-place");
+	err = rp2040_call_rom_func(bank->target, priv, priv->jump_enter_cmd_xip, NULL, 0);
+	if (err != ERROR_OK)
+	{
+		LOG_ERROR("RP2040 enter xip: failed to enter flash XIP mode");
+	}
+	return err;
 }
 
 static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, uint32_t offset, uint32_t count)
@@ -178,6 +203,12 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	int err = stack_grab_and_prep(bank);
 	if (err != ERROR_OK)
 		return err;
+
+	err = rp2040_flash_exit_xip(bank);
+	if (err != ERROR_OK)
+	{
+		return err;
+	}
 
 	const unsigned int chunk_size = target_get_working_area_avail(target);
 	if (target_alloc_working_area(target, chunk_size, &bounce) != ERROR_OK) {
@@ -223,10 +254,9 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 		LOG_ERROR("RP2040 write: failed to flush flash cache");
 		return err;
 	}
-	LOG_DEBUG("Configuring SSI for execute-in-place");
-	err = rp2040_call_rom_func(bank->target, priv, priv->jump_enter_cmd_xip, NULL, 0);
-	if (err != ERROR_OK)
-		LOG_ERROR("RP2040 write: failed to flush flash cache");
+
+	err = rp2040_flash_enter_xip(bank);
+
 	return err;
 }
 
@@ -261,6 +291,12 @@ static int rp2040_flash_erase(struct flash_bank *bank, unsigned int first, unsig
 	*/
 
 	err = rp2040_call_rom_func(bank->target, priv, priv->jump_flash_range_erase, args, ARRAY_SIZE(args));
+	if (err != ERROR_OK)
+	{
+		LOG_ERROR("RP2040 erase: flash_range_erase failed");
+		return err;
+	}
+	err = rp2040_flash_enter_xip(bank);
 
 	return err;
 }

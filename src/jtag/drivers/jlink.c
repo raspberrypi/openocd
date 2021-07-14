@@ -2008,6 +2008,8 @@ struct pending_scan_result {
 	void *buffer;
 	/** Offset in the destination buffer */
 	unsigned buffer_offset;
+	/** true if the command has nmo acknowledgement */
+	bool no_ack;
 };
 
 #define MAX_PENDING_SCAN_RESULTS 256
@@ -2155,6 +2157,16 @@ static int jlink_swd_switch_seq(enum swd_special_seq seq)
 			s = swd_seq_swd_to_jtag;
 			s_len = swd_seq_swd_to_jtag_len;
 			break;
+		case DORMANT_TO_SWD:
+			LOG_DEBUG("DORMANT-to-SWD");
+			s = swd_seq_dormant_to_swd;
+			s_len = swd_seq_dormant_to_swd_len;
+			break;
+		case SWD_TO_DORMANT:
+			LOG_DEBUG("SWD-to-DORMANT");
+			s = swd_seq_swd_to_dormant;
+			s_len = swd_seq_swd_to_dormant_len;
+			break;
 		default:
 			LOG_ERROR("Sequence %d not supported.", seq);
 			return ERROR_FAIL;
@@ -2191,7 +2203,9 @@ static int jlink_swd_run_queue(void)
 	}
 
 	for (i = 0; i < pending_scan_results_length; i++) {
-		int ack = buf_get_u32(tdo_buffer, pending_scan_results_buffer[i].first, 3);
+		int ack = pending_scan_results_buffer[i].no_ack ?
+				SWD_ACK_OK :
+				buf_get_u32(tdo_buffer, pending_scan_results_buffer[i].first, 3);
 
 		if (ack != SWD_ACK_OK) {
 			LOG_DEBUG("SWD ack not OK: %d %s", ack,
@@ -2255,6 +2269,9 @@ static void jlink_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint3
 
 		jlink_queue_data_out(data_parity_trn, 32 + 1);
 	}
+	pending_scan_results_buffer[pending_scan_results_length].no_ack =
+			(0 == ((cmd ^ swd_cmd(false, false, DP_TARGETSEL)) &
+						  (SWD_CMD_APnDP|SWD_CMD_RnW|SWD_CMD_A32)));
 
 	pending_scan_results_length++;
 

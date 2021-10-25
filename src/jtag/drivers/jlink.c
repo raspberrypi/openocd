@@ -2269,7 +2269,7 @@ static void jlink_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, uint3
 	}
 	pending_scan_results_buffer[pending_scan_results_length].no_ack =
 			(0 == ((cmd ^ swd_cmd(false, false, DP_TARGETSEL)) &
-						  (SWD_CMD_APnDP|SWD_CMD_RnW|SWD_CMD_A32)));
+						  (SWD_CMD_APNDP|SWD_CMD_RNW|SWD_CMD_A32)));
 
 	pending_scan_results_length++;
 

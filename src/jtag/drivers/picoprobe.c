@@ -274,7 +274,7 @@ static int picoprobe_swd_run_queue(void)
 
 	for (size_t i = 0; i < swd_cmd_queue_length; i++) {
 		if (0 == ((swd_cmd_queue[i].cmd ^ swd_cmd(false, false, DP_TARGETSEL)) &
-				(SWD_CMD_APnDP|SWD_CMD_RnW|SWD_CMD_A32))) {
+				(SWD_CMD_APNDP|SWD_CMD_RNW|SWD_CMD_A32))) {
 			/* Targetsel has no ack so force it */
 			buf_set_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1, 3, SWD_ACK_OK);
 		}
@@ -288,17 +288,17 @@ static int picoprobe_swd_run_queue(void)
 
 		LOG_DEBUG_IO("%s %s %s reg %X = %08"PRIx32,
 				ack == SWD_ACK_OK ? "OK" : ack == SWD_ACK_WAIT ? "WAIT" : ack == SWD_ACK_FAULT ? "FAULT" : "JUNK",
-				swd_cmd_queue[i].cmd & SWD_CMD_APnDP ? "AP" : "DP",
-				swd_cmd_queue[i].cmd & SWD_CMD_RnW ? "read" : "write",
+				swd_cmd_queue[i].cmd & SWD_CMD_APNDP ? "AP" : "DP",
+				swd_cmd_queue[i].cmd & SWD_CMD_RNW ? "read" : "write",
 				(swd_cmd_queue[i].cmd & SWD_CMD_A32) >> 1,
 				buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn,
-						1 + 3 + (swd_cmd_queue[i].cmd & SWD_CMD_RnW ? 0 : 1), 32));
+						1 + 3 + (swd_cmd_queue[i].cmd & SWD_CMD_RNW ? 0 : 1), 32));
 
 		if (ack != SWD_ACK_OK) {
 			queued_retval = ack == SWD_ACK_WAIT ? ERROR_WAIT : ERROR_FAIL;
 			goto skip;
 
-		} else if (swd_cmd_queue[i].cmd & SWD_CMD_RnW) {
+		} else if (swd_cmd_queue[i].cmd & SWD_CMD_RNW) {
 			uint32_t data = buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1 + 3, 32);
 			int parity = buf_get_u32(swd_cmd_queue[i].trn_ack_data_parity_trn, 1 + 3 + 32, 1);
 
@@ -338,7 +338,7 @@ static void picoprobe_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, u
 
 	picoprobe_write_bits(&swd_cmd_queue[i].cmd, 0, 8);
 
-	if (swd_cmd_queue[i].cmd & SWD_CMD_RnW) {
+	if (swd_cmd_queue[i].cmd & SWD_CMD_RNW) {
 		/* Queue a read transaction */
 		swd_cmd_queue[i].dst = dst;
 
@@ -357,7 +357,7 @@ static void picoprobe_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, u
 	}
 
 	/* Insert idle cycles after AP accesses to avoid WAIT */
-	if (cmd & SWD_CMD_APnDP) {
+	if (cmd & SWD_CMD_APNDP) {
 		if (ap_delay_clk == 0)
 			return;
 		LOG_DEBUG("Add %d idle cycles", ap_delay_clk);
@@ -368,13 +368,13 @@ static void picoprobe_swd_queue_cmd(uint8_t cmd, uint32_t *dst, uint32_t data, u
 
 static void picoprobe_swd_read_reg(uint8_t cmd, uint32_t *value, uint32_t ap_delay_clk)
 {
-	assert(cmd & SWD_CMD_RnW);
+	assert(cmd & SWD_CMD_RNW);
 	picoprobe_swd_queue_cmd(cmd, value, 0, ap_delay_clk);
 }
 
 static void picoprobe_swd_write_reg(uint8_t cmd, uint32_t value, uint32_t ap_delay_clk)
 {
-	assert(!(cmd & SWD_CMD_RnW));
+	assert(!(cmd & SWD_CMD_RNW));
 	picoprobe_swd_queue_cmd(cmd, NULL, value, ap_delay_clk);
 }
 

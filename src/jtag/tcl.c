@@ -630,6 +630,14 @@ static int jim_newtap_cmd(Jim_GetOptInfo *goi)
 					instance_id_specified = true;
 					e = jim_newtap_md_param(n, goi, pTap);
 					break;
+				/* SWD doesn't require any JTAG tap parameters; we allow (but ignore) them  */
+				case NTAP_OPT_EXPECTED_ID:
+				case NTAP_OPT_IRLEN:
+				case NTAP_OPT_IRMASK:
+				case NTAP_OPT_IRCAPTURE:
+					/* dummy read to ignore the next argument */
+					Jim_GetOpt_Wide(goi, NULL);
+					break;
 				default:
 					e = JIM_OK;
 					break;

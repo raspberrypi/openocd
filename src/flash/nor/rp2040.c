@@ -183,7 +183,16 @@ static int rp2040_flash_exit_xip(struct flash_bank *bank)
 static int rp2040_flash_enter_xip(struct flash_bank *bank) 
 {
 	struct rp2040_flash_bank *priv = bank->driver_priv;
-	int err = ERROR_OK;
+
+	// Always flush before returning to execute-in-place, to invalidate stale cache contents.
+	// The flush call also restores regular hardware-controlled chip select following a rp2040_flash_exit_xip().
+	LOG_DEBUG("Flushing flash cache after write behind");
+	int err = rp2040_call_rom_func(bank->target, priv->stacktop, FUNC_FLASH_FLUSH_CACHE, NULL, 0);
+	if (err != ERROR_OK)
+	{
+		LOG_ERROR("RP2040 enter xip: failed to flush flash cache");
+		return err;
+	}
 
 	LOG_DEBUG("Configuring SSI for execute-in-place");
 	err = rp2040_call_rom_func(bank->target, priv->stacktop, FUNC_FLASH_ENTER_CMD_XIP, NULL, 0);

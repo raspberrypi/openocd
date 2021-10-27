@@ -1446,7 +1446,7 @@ static int riscv_address_translate(struct target *target,
 	uint64_t ppn_value;
 	target_addr_t table_address;
 	virt2phys_info_t *info;
-	uint64_t pte;
+	uint64_t pte = 0;
 	int i;
 
 	if (riscv_rtos_enabled(target))
@@ -4128,7 +4128,7 @@ int riscv_init_registers(struct target *target)
 		reg_name += strlen(reg_name) + 1;
 		assert(reg_name < info->reg_names + target->reg_cache->num_regs *
 				max_reg_name_len);
-		r->value = &info->reg_cache_values[number];
+		r->value = info->reg_cache_values[number];
 	}
 
 	return ERROR_OK;

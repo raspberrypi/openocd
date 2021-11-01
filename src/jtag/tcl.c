@@ -194,6 +194,11 @@ static int Jim_Command_drscan(Jim_Interp *interp, int argc, Jim_Obj *const *args
 	retval = jtag_execute_queue();
 	if (retval != ERROR_OK) {
 		Jim_SetResultString(interp, "drscan: jtag execute failed", -1);
+
+		for (i = 0; i < field_count; i++)
+			free(fields[i].in_value);
+		free(fields);
+
 		return JIM_ERR;
 	}
 
@@ -624,6 +629,14 @@ static int jim_newtap_cmd(Jim_GetOptInfo *goi)
 				case NTAP_OPT_INSTANCE_ID:
 					instance_id_specified = true;
 					e = jim_newtap_md_param(n, goi, pTap);
+					break;
+				/* SWD doesn't require any JTAG tap parameters; we allow (but ignore) them  */
+				case NTAP_OPT_EXPECTED_ID:
+				case NTAP_OPT_IRLEN:
+				case NTAP_OPT_IRMASK:
+				case NTAP_OPT_IRCAPTURE:
+					/* dummy read to ignore the next argument */
+					Jim_GetOpt_Wide(goi, NULL);
 					break;
 				default:
 					e = JIM_OK;

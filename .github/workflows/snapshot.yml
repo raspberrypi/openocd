@@ -24,7 +24,7 @@ jobs:
           mkdir -p $DL_DIR && cd $DL_DIR
           wget "https://github.com/libusb/libusb/releases/download/v${LIBUSB1_VER}/libusb-${LIBUSB1_VER}.tar.bz2"
           tar -xjf libusb-${LIBUSB1_VER}.tar.bz2
-          echo "::set-env name=LIBUSB1_SRC::$PWD/libusb-${LIBUSB1_VER}"
+          echo "LIBUSB1_SRC=$PWD/libusb-${LIBUSB1_VER}" >> $GITHUB_ENV
       - name: Prepare hidapi
         env:
           HIDAPI_VER: 0.9.0
@@ -34,7 +34,7 @@ jobs:
           tar -xzf hidapi-${HIDAPI_VER}.tar.gz
           cd hidapi-hidapi-${HIDAPI_VER}
           ./bootstrap
-          echo "::set-env name=HIDAPI_SRC::$PWD"
+          echo "HIDAPI_SRC=$PWD" >> $GITHUB_ENV
       - name: Prepare libftdi
         env:
           LIBFTDI_VER: 1.4
@@ -42,7 +42,17 @@ jobs:
           mkdir -p $DL_DIR && cd $DL_DIR
           wget "http://www.intra2net.com/en/developer/libftdi/download/libftdi1-${LIBFTDI_VER}.tar.bz2"
           tar -xjf libftdi1-${LIBFTDI_VER}.tar.bz2
-          echo "::set-env name=LIBFTDI_SRC::$PWD/libftdi1-${LIBFTDI_VER}"
+          echo "LIBFTDI_SRC=$PWD/libftdi1-${LIBFTDI_VER}" >> $GITHUB_ENV
+      - name: Prepare capstone
+        env:
+          CAPSTONE_VER: 4.0.2
+        run: |
+          mkdir -p $DL_DIR && cd $DL_DIR
+          CAPSTONE_NAME=${CAPSTONE_VER}
+          CAPSTONE_FOLDER=capstone-${CAPSTONE_VER}
+          wget "https://github.com/aquynh/capstone/archive/${CAPSTONE_VER}.tar.gz"
+          tar -xzf ${CAPSTONE_VER}.tar.gz
+          echo "CAPSTONE_SRC=$PWD/capstone-${CAPSTONE_VER}" >> $GITHUB_ENV
       - name: Package OpenOCD for windows
         env:
           MAKE_JOBS: 2
@@ -50,6 +60,7 @@ jobs:
           LIBUSB1_CONFIG: --enable-shared --enable-static
           HIDAPI_CONFIG: --enable-shared --disable-static --disable-testgui
           LIBFTDI_CONFIG: "-DCMAKE_TOOLCHAIN_FILE='${{ env.LIBFTDI_SRC }}/cmake/Toolchain-i686-w64-mingw32.cmake' -DBUILD_TESTS:BOOL=off -DFTDIPP:BOOL=off -DPYTHON_BINDINGS:BOOL=off -DEXAMPLES:BOOL=off -DDOCUMENTATION:BOOL=off -DFTDI_EEPROM:BOOL=off"
+          CAPSTONE_CONFIG: "CAPSTONE_BUILD_CORE_ONLY=yes CAPSTONE_STATIC=yes CAPSTONE_SHARED=no"
         run: |
           # set snapshot tag
           OPENOCD_TAG="`git tag --points-at HEAD`"
@@ -67,26 +78,31 @@ jobs:
           # prepare the artifact
           ARTIFACT="openocd-${OPENOCD_TAG}-${HOST}.tar.gz"
           tar -czf $ARTIFACT *
-          echo "::set-env name=ARTIFACT_NAME::$ARTIFACT"
-          echo "::set-env name=ARTIFACT_PATH::$PWD/$ARTIFACT"
+          echo "ARTIFACT_NAME=$ARTIFACT" >> $GITHUB_ENV
+          echo "ARTIFACT_PATH=$PWD/$ARTIFACT" >> $GITHUB_ENV
       - name: Publish OpenOCD packaged for windows
         uses: actions/upload-artifact@v1
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ARTIFACT_PATH }}
-      - name: Get the upload URL for a release
-        id: get_release
+      - name: Create Release
+        id: create_release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: bruceadams/get-release@v1.2.0
+        uses: actions/create-release@v1.1.4
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: ${{ github.ref }}
+          draft: false
+          prerelease: false
       - name: Release OpenOCD packaged for windows
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ${{ env.ARTIFACT_PATH }}
           asset_name: ${{ env.ARTIFACT_NAME }}
           asset_content_type: application/gzip

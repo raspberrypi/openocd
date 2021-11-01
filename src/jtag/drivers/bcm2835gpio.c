@@ -115,10 +115,15 @@ static int bcm2835gpio_swd_write(int swclk, int swdio)
 {
 	uint32_t set = swclk << swclk_gpio | swdio << swdio_gpio;
 	uint32_t clear = !swclk << swclk_gpio | !swdio << swdio_gpio;
-
+	int temp;
+	
 	GPIO_SET = set;
 	GPIO_CLR = clear;
 
+	do {
+		temp = GPIO_LEV & ( 1 << swclk_gpio );
+	} while ( temp != swclk << swclk_gpio );	
+		
 	for (unsigned int i = 0; i < jtag_delay; i++)
 		asm volatile ("");
 

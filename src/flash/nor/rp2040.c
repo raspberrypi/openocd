@@ -147,7 +147,7 @@ static int rp2040_call_rom_func(struct target *target, target_addr_t stack, uint
 #define BLOCK_SIZE (1ul << 16)
 #define BLOCK_ERASE_CMD 0xd8
 #define SECTOR_SIZE 4096
-#define PAGE_SIZE 256
+#define WRITE_PAGE_SIZE 256
 
 struct rp2040_flash_bank {
 	int probed;
@@ -214,8 +214,8 @@ static int rp2040_flash_write(struct flash_bank *bank, const uint8_t *buffer, ui
 	struct working_area *bounce;
 	int err = ERROR_OK;
 
-	if (offset % PAGE_SIZE) {
-		LOG_ERROR("RP2040 flash writes must be page-aligned (%d bytes). Can't continue", PAGE_SIZE);
+	if (offset % WRITE_PAGE_SIZE) {
+		LOG_ERROR("RP2040 flash writes must be page-aligned (%d bytes). Can't continue", WRITE_PAGE_SIZE);
 		return ERROR_TARGET_UNALIGNED_ACCESS;
 	}
 

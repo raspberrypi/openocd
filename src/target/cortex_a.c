@@ -959,7 +959,7 @@ static int cortex_a_resume(struct target *target, int current,
 {
 	int retval = 0;
 	/* dummy resume for smp toggle in order to reduce gdb impact  */
-	if ((target->smp) && (target->gdb_service->core[1] != -1)) {
+	if ((target->smp) && (target->gdb_service) && (target->gdb_service->core[1] != -1)) {
 		/*   simulate a start and halt of target */
 		target->gdb_service->target = NULL;
 		target->gdb_service->core[0] = target->gdb_service->core[1];
@@ -969,7 +969,9 @@ static int cortex_a_resume(struct target *target, int current,
 	}
 	cortex_a_internal_restore(target, current, &address, handle_breakpoints, debug_execution);
 	if (target->smp) {
-		target->gdb_service->core[0] = -1;
+		if (target->gdb_service) {
+			target->gdb_service->core[0] = -1;
+		}
 		retval = cortex_a_restore_smp(target, handle_breakpoints);
 		if (retval != ERROR_OK)
 			return retval;

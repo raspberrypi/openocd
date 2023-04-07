@@ -608,7 +608,7 @@ static int davinci_write_page_ecc4infix(struct nand_device *nand, uint32_t page,
 		oob_size -= 16;
 
 	} while (data_size);
-
+	(void)oob_size;
 	/* the last data and OOB writes included the spare area */
 	return davinci_writepage_tail(nand, NULL, 0);
 }

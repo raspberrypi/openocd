@@ -56,6 +56,7 @@ static int dsp5680xx_build_sector_list(struct flash_bank *bank)
 		bank->sectors[i].is_erased = -1;
 		bank->sectors[i].is_protected = -1;
 	}
+	(void)offset;
 	LOG_USER("%s not tested yet.", __func__);
 	return ERROR_OK;
 

@@ -57,12 +57,12 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 {
 	struct semihosting *semihosting = target->semihosting;
 	if (!semihosting) {
-		LOG_DEBUG("   -> NONE (!semihosting)");
+		LOG_TARGET_DEBUG(target, "   -> NONE (!semihosting)");
 		return SEMIHOSTING_NONE;
 	}
 
 	if (!semihosting->is_active) {
-		LOG_DEBUG("   -> NONE (!semihosting->is_active)");
+		LOG_TARGET_DEBUG(target, "   -> NONE (!semihosting->is_active)");
 		return SEMIHOSTING_NONE;
 	}
 
@@ -71,33 +71,31 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	if (result != ERROR_OK)
 		return SEMIHOSTING_ERROR;
 
-	uint8_t tmp_buf[12];
-
-	/* Read three uncompressed instructions: The previous, the current one (pointed to by PC) and the next one */
-	for (int i = 0; i < 3; i++) {
-		/* Instruction memories may not support arbitrary read size. Use any size that will work. */
-		*retval = riscv_read_by_any_size(target, (pc - 4) + 4 * i, 4, tmp_buf + 4 * i);
-		if (*retval != ERROR_OK)
-			return SEMIHOSTING_ERROR;
-	}
-
 	/*
 	 * The instructions that trigger a semihosting call,
 	 * always uncompressed, should look like:
-	 *
-	 * 01f01013              slli    zero,zero,0x1f
-	 * 00100073              ebreak
-	 * 40705013              srai    zero,zero,0x7
 	 */
-	uint32_t pre = target_buffer_get_u32(target, tmp_buf);
-	uint32_t ebreak = target_buffer_get_u32(target, tmp_buf + 4);
-	uint32_t post = target_buffer_get_u32(target, tmp_buf + 8);
-	LOG_DEBUG("check %08x %08x %08x from 0x%" PRIx64 "-4", pre, ebreak, post, pc);
+	uint32_t magic[] = {
+		0x01f01013,	/* slli    zero,zero,0x1f */
+		0x00100073,	/* ebreak */
+		0x40705013	/* srai    zero,zero,0x7 */
+	};
 
-	if (pre != 0x01f01013 || ebreak != 0x00100073 || post != 0x40705013) {
-		/* Not the magic sequence defining semihosting. */
-		LOG_DEBUG("   -> NONE (no magic)");
-		return SEMIHOSTING_NONE;
+	/* Read three uncompressed instructions: The previous, the current one (pointed to by PC) and the next one */
+	for (int i = 0; i < 3; i++) {
+		uint8_t buf[4];
+		/* Instruction memories may not support arbitrary read size. Use any size that will work. */
+		target_addr_t address = (pc - 4) + 4 * i;
+		*retval = riscv_read_by_any_size(target, address, 4, buf);
+		if (*retval != ERROR_OK)
+			return SEMIHOSTING_ERROR;
+		uint32_t value = target_buffer_get_u32(target, buf);
+		LOG_TARGET_DEBUG(target, "compare 0x%08x from 0x%" PRIx64 " against 0x%08x",
+			value, address, magic[i]);
+		if (value != magic[i]) {
+			LOG_TARGET_DEBUG(target, "   -> NONE (no magic)");
+			return SEMIHOSTING_NONE;
+		}
 	}
 
 	/*
@@ -111,13 +109,13 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 
 		result = riscv_get_register(target, &r0, GDB_REGNO_A0);
 		if (result != ERROR_OK) {
-			LOG_DEBUG("   -> ERROR (couldn't read a0)");
+			LOG_TARGET_ERROR(target, "Could not read semihosting operation code (register a0)");
 			return SEMIHOSTING_ERROR;
 		}
 
 		result = riscv_get_register(target, &r1, GDB_REGNO_A1);
 		if (result != ERROR_OK) {
-			LOG_DEBUG("   -> ERROR (couldn't read a1)");
+			LOG_TARGET_ERROR(target, "Could not read semihosting operation code (register a1)");
 			return SEMIHOSTING_ERROR;
 		}
 
@@ -131,12 +129,12 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 
 			*retval = semihosting_common(target);
 			if (*retval != ERROR_OK) {
-				LOG_ERROR("Failed semihosting operation (0x%02X)", semihosting->op);
+				LOG_TARGET_ERROR(target, "Failed semihosting operation (0x%02X)", semihosting->op);
 				return SEMIHOSTING_ERROR;
 			}
 		} else {
 			/* Unknown operation number, not a semihosting call. */
-			LOG_DEBUG("   -> NONE (unknown operation number)");
+			LOG_TARGET_ERROR(target, "Unknown semihosting operation requested (op = 0x%x)", semihosting->op);
 			return SEMIHOSTING_NONE;
 		}
 	}
@@ -151,11 +149,11 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	 * operation to complete.
 	 */
 	if (semihosting->is_resumable && !semihosting->hit_fileio) {
-		LOG_DEBUG("   -> HANDLED");
+		LOG_TARGET_DEBUG(target, "   -> HANDLED");
 		return SEMIHOSTING_HANDLED;
 	}
 
-	LOG_DEBUG("   -> WAITING");
+	LOG_TARGET_DEBUG(target, "   -> WAITING");
 	return SEMIHOSTING_WAITING;
 }
 
@@ -168,7 +166,7 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
  */
 static int riscv_semihosting_setup(struct target *target, int enable)
 {
-	LOG_DEBUG("[%s] enable=%d", target_name(target), enable);
+	LOG_TARGET_DEBUG(target, "enable=%d", enable);
 
 	struct semihosting *semihosting = target->semihosting;
 	if (semihosting)
@@ -185,7 +183,7 @@ static int riscv_semihosting_post_result(struct target *target)
 		return 0;
 	}
 
-	LOG_DEBUG("0x%" PRIx64, semihosting->result);
+	LOG_TARGET_DEBUG(target, "Result: 0x%" PRIx64, semihosting->result);
 	riscv_set_register(target, GDB_REGNO_A0, semihosting->result);
 	return 0;
 }

@@ -24,6 +24,7 @@
 #include "riscv.h"
 #include "asm.h"
 #include "gdb_regs.h"
+#include "field_helpers.h"
 
 /**
  * Since almost everything can be accomplish by scanning the dbus register, all
@@ -67,8 +68,7 @@
  * to the target. Afterwards use cache_get... to read results.
  */
 
-#define get_field(reg, mask) (((reg) & (mask)) / ((mask) & ~((mask) << 1)))
-#define set_field(reg, mask, val) (((reg) & ~(mask)) | (((val) * ((mask) & ~((mask) << 1))) & (mask)))
+static int handle_halt(struct target *target, bool announce);
 
 /* Constants for legacy SiFive hardware breakpoints. */
 #define CSR_BPCONTROL_X			(1<<0)
@@ -161,15 +161,6 @@ typedef enum slot {
 
 #define DRAM_CACHE_SIZE		16
 
-struct trigger {
-	uint64_t address;
-	uint32_t length;
-	uint64_t mask;
-	uint64_t value;
-	bool read, write, execute;
-	int unique_id;
-};
-
 struct memory_cache_line {
 	uint32_t data;
 	bool valid;
@@ -219,7 +210,8 @@ typedef struct {
 
 static int poll_target(struct target *target, bool announce);
 static int riscv011_poll(struct target *target);
-static int get_register(struct target *target, riscv_reg_t *value, int regid);
+static int get_register(struct target *target, riscv_reg_t *value,
+		enum gdb_regno regid);
 
 /*** Utility functions. ***/
 
@@ -279,7 +271,7 @@ static uint16_t dram_address(unsigned int index)
 		return 0x40 + index - 0x10;
 }
 
-static uint32_t dtmcontrol_scan(struct target *target, uint32_t out)
+static int dtmcontrol_scan(struct target *target, uint32_t out, uint32_t *in_ptr)
 {
 	struct scan_field field;
 	uint8_t in_value[4];
@@ -306,7 +298,9 @@ static uint32_t dtmcontrol_scan(struct target *target, uint32_t out)
 	uint32_t in = buf_get_u32(field.in_value, 0, 32);
 	LOG_DEBUG("DTMCONTROL: 0x%x -> 0x%x", out, in);
 
-	return in;
+	if (in_ptr)
+		*in_ptr = in;
+	return ERROR_OK;
 }
 
 static uint32_t idcode_scan(struct target *target)
@@ -344,7 +338,7 @@ static void increase_dbus_busy_delay(struct target *target)
 			info->dtmcontrol_idle, info->dbus_busy_delay,
 			info->interrupt_high_delay);
 
-	dtmcontrol_scan(target, DTMCONTROL_DBUS_RESET);
+	dtmcontrol_scan(target, DTMCONTROL_DBUS_RESET, NULL /* discard value */);
 }
 
 static void increase_interrupt_high_delay(struct target *target)
@@ -431,8 +425,13 @@ static dbus_status_t dbus_scan(struct target *target, uint16_t *address_in,
 		.out_value = out,
 		.in_value = in
 	};
+	if (address_in)
+		*address_in = 0;
 
-	assert(info->addrbits != 0);
+	if (info->addrbits == 0) {
+		LOG_TARGET_ERROR(target, "Can't access DMI because addrbits=0.");
+		return DBUS_STATUS_FAILED;
+	}
 
 	buf_set_u64(out, DBUS_OP_START, DBUS_OP_SIZE, op);
 	buf_set_u64(out, DBUS_DATA_START, DBUS_DATA_SIZE, data_out);
@@ -686,17 +685,12 @@ static void dram_write32(struct target *target, unsigned int index, uint32_t val
 }
 
 /** Read the haltnot and interrupt bits. */
-static bits_t read_bits(struct target *target)
+static int read_bits(struct target *target, bits_t *result)
 {
 	uint64_t value;
 	dbus_status_t status;
 	uint16_t address_in;
 	riscv011_info_t *info = get_info(target);
-
-	bits_t err_result = {
-		.haltnot = 0,
-		.interrupt = 0
-	};
 
 	do {
 		unsigned i = 0;
@@ -706,26 +700,23 @@ static bits_t read_bits(struct target *target)
 				if (address_in == (1<<info->addrbits) - 1 &&
 						value == (1ULL<<DBUS_DATA_SIZE) - 1) {
 					LOG_ERROR("TDO seems to be stuck high.");
-					return err_result;
+					return ERROR_FAIL;
 				}
 				increase_dbus_busy_delay(target);
-			} else if (status == DBUS_STATUS_FAILED) {
-				/* TODO: return an actual error */
-				return err_result;
 			}
 		} while (status == DBUS_STATUS_BUSY && i++ < 256);
 
-		if (i >= 256) {
+		if (status != DBUS_STATUS_SUCCESS) {
 			LOG_ERROR("Failed to read from 0x%x; status=%d", address_in, status);
-			return err_result;
+			return ERROR_FAIL;
 		}
 	} while (address_in > 0x10 && address_in != DMCONTROL);
 
-	bits_t result = {
-		.haltnot = get_field(value, DMCONTROL_HALTNOT),
-		.interrupt = get_field(value, DMCONTROL_INTERRUPT)
-	};
-	return result;
+	if (result) {
+		result->haltnot = get_field(value, DMCONTROL_HALTNOT);
+		result->interrupt = get_field(value, DMCONTROL_INTERRUPT);
+	}
+	return ERROR_OK;
 }
 
 static int wait_for_debugint_clear(struct target *target, bool ignore_first)
@@ -736,10 +727,16 @@ static int wait_for_debugint_clear(struct target *target, bool ignore_first)
 		 * result of the read that happened just before debugint was set.
 		 * (Assuming the last scan before calling this function was one that
 		 * sets debugint.) */
-		read_bits(target);
+		read_bits(target, NULL);
 	}
 	while (1) {
-		bits_t bits = read_bits(target);
+		bits_t bits = {
+			.haltnot = 0,
+			.interrupt = 0
+		};
+		if (read_bits(target, &bits) != ERROR_OK)
+			return ERROR_FAIL;
+
 		if (!bits.interrupt)
 			return ERROR_OK;
 		if (time(NULL) - start > riscv_command_timeout_sec) {
@@ -1048,7 +1045,7 @@ static int read_remote_csr(struct target *target, uint64_t *value, uint32_t csr)
 	uint32_t exception = cache_get32(target, info->dramsize-1);
 	if (exception) {
 		LOG_WARNING("Got exception 0x%x when reading %s", exception,
-				gdb_regno_name(GDB_REGNO_CSR0 + csr));
+				gdb_regno_name(target, GDB_REGNO_CSR0 + csr));
 		*value = ~0;
 		return ERROR_FAIL;
 	}
@@ -1109,9 +1106,13 @@ static int maybe_write_tselect(struct target *target)
 
 static int execute_resume(struct target *target, bool step)
 {
+	RISCV_INFO(r);
 	riscv011_info_t *info = get_info(target);
 
 	LOG_DEBUG("step=%d", step);
+
+	if (riscv_flush_registers(target) != ERROR_OK)
+		return ERROR_FAIL;
 
 	maybe_write_tselect(target);
 
@@ -1137,9 +1138,9 @@ static int execute_resume(struct target *target, bool step)
 		}
 	}
 
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKM, riscv_ebreakm);
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKS, riscv_ebreaks);
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKU, riscv_ebreaku);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKM, r->riscv_ebreakm);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKS, r->riscv_ebreaks);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKU, r->riscv_ebreaku);
 	info->dcsr = set_field(info->dcsr, DCSR_EBREAKH, 1);
 	info->dcsr &= ~DCSR_HALT;
 
@@ -1189,17 +1190,7 @@ static int full_step(struct target *target, bool announce)
 			return ERROR_FAIL;
 		}
 	}
-	return ERROR_OK;
-}
-
-static int resume(struct target *target, bool debug_execution, bool step)
-{
-	if (debug_execution) {
-		LOG_ERROR("TODO: debug_execution is true");
-		return ERROR_FAIL;
-	}
-
-	return execute_resume(target, step);
+	return handle_halt(target, announce);
 }
 
 static uint64_t reg_cache_get(struct target *target, unsigned int number)
@@ -1256,7 +1247,7 @@ static int register_read(struct target *target, riscv_reg_t *value, int regnum)
 
 	uint32_t exception = cache_get32(target, info->dramsize-1);
 	if (exception) {
-		LOG_WARNING("Got exception 0x%x when reading %s", exception, gdb_regno_name(regnum));
+		LOG_WARNING("Got exception 0x%x when reading %s", exception, gdb_regno_name(target, regnum));
 		*value = ~0;
 		return ERROR_FAIL;
 	}
@@ -1331,14 +1322,15 @@ static int register_write(struct target *target, unsigned int number,
 	uint32_t exception = cache_get32(target, info->dramsize-1);
 	if (exception) {
 		LOG_WARNING("Got exception 0x%x when writing %s", exception,
-				gdb_regno_name(number));
+				gdb_regno_name(target, number));
 		return ERROR_FAIL;
 	}
 
 	return ERROR_OK;
 }
 
-static int get_register(struct target *target, riscv_reg_t *value, int regid)
+static int get_register(struct target *target, riscv_reg_t *value,
+		enum gdb_regno regid)
 {
 	riscv011_info_t *info = get_info(target);
 
@@ -1382,7 +1374,8 @@ static int get_register(struct target *target, riscv_reg_t *value, int regid)
 	return ERROR_OK;
 }
 
-static int set_register(struct target *target, int regid, uint64_t value)
+static int set_register(struct target *target, enum gdb_regno regid,
+		riscv_reg_t value)
 {
 	return register_write(target, regid, value);
 }
@@ -1468,19 +1461,20 @@ static int step(struct target *target, bool current, target_addr_t address,
 static int examine(struct target *target)
 {
 	/* Don't need to select dbus, since the first thing we do is read dtmcontrol. */
-
-	uint32_t dtmcontrol = dtmcontrol_scan(target, 0);
-	LOG_DEBUG("dtmcontrol=0x%x", dtmcontrol);
-	LOG_DEBUG("  addrbits=%d", get_field(dtmcontrol, DTMCONTROL_ADDRBITS));
-	LOG_DEBUG("  version=%d", get_field(dtmcontrol, DTMCONTROL_VERSION));
-	LOG_DEBUG("  idle=%d", get_field(dtmcontrol, DTMCONTROL_IDLE));
-	if (dtmcontrol == 0) {
-		LOG_ERROR("dtmcontrol is 0. Check JTAG connectivity/board power.");
+	uint32_t dtmcontrol;
+	if (dtmcontrol_scan(target, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
+		LOG_ERROR("Could not scan dtmcontrol. Check JTAG connectivity/board power.");
 		return ERROR_FAIL;
 	}
+
+	LOG_DEBUG("dtmcontrol=0x%x", dtmcontrol);
+	LOG_DEBUG("  addrbits=%d", get_field32(dtmcontrol, DTMCONTROL_ADDRBITS));
+	LOG_DEBUG("  version=%d", get_field32(dtmcontrol, DTMCONTROL_VERSION));
+	LOG_DEBUG("  idle=%d", get_field32(dtmcontrol, DTMCONTROL_IDLE));
+
 	if (get_field(dtmcontrol, DTMCONTROL_VERSION) != 0) {
 		LOG_ERROR("Unsupported DTM version %d. (dtmcontrol=0x%x)",
-				get_field(dtmcontrol, DTMCONTROL_VERSION), dtmcontrol);
+				get_field32(dtmcontrol, DTMCONTROL_VERSION), dtmcontrol);
 		return ERROR_FAIL;
 	}
 
@@ -1498,22 +1492,22 @@ static int examine(struct target *target)
 
 	uint32_t dminfo = dbus_read(target, DMINFO);
 	LOG_DEBUG("dminfo: 0x%08x", dminfo);
-	LOG_DEBUG("  abussize=0x%x", get_field(dminfo, DMINFO_ABUSSIZE));
-	LOG_DEBUG("  serialcount=0x%x", get_field(dminfo, DMINFO_SERIALCOUNT));
-	LOG_DEBUG("  access128=%d", get_field(dminfo, DMINFO_ACCESS128));
-	LOG_DEBUG("  access64=%d", get_field(dminfo, DMINFO_ACCESS64));
-	LOG_DEBUG("  access32=%d", get_field(dminfo, DMINFO_ACCESS32));
-	LOG_DEBUG("  access16=%d", get_field(dminfo, DMINFO_ACCESS16));
-	LOG_DEBUG("  access8=%d", get_field(dminfo, DMINFO_ACCESS8));
-	LOG_DEBUG("  dramsize=0x%x", get_field(dminfo, DMINFO_DRAMSIZE));
-	LOG_DEBUG("  authenticated=0x%x", get_field(dminfo, DMINFO_AUTHENTICATED));
-	LOG_DEBUG("  authbusy=0x%x", get_field(dminfo, DMINFO_AUTHBUSY));
-	LOG_DEBUG("  authtype=0x%x", get_field(dminfo, DMINFO_AUTHTYPE));
-	LOG_DEBUG("  version=0x%x", get_field(dminfo, DMINFO_VERSION));
+	LOG_DEBUG("  abussize=0x%x", get_field32(dminfo, DMINFO_ABUSSIZE));
+	LOG_DEBUG("  serialcount=0x%x", get_field32(dminfo, DMINFO_SERIALCOUNT));
+	LOG_DEBUG("  access128=%d", get_field32(dminfo, DMINFO_ACCESS128));
+	LOG_DEBUG("  access64=%d", get_field32(dminfo, DMINFO_ACCESS64));
+	LOG_DEBUG("  access32=%d", get_field32(dminfo, DMINFO_ACCESS32));
+	LOG_DEBUG("  access16=%d", get_field32(dminfo, DMINFO_ACCESS16));
+	LOG_DEBUG("  access8=%d", get_field32(dminfo, DMINFO_ACCESS8));
+	LOG_DEBUG("  dramsize=0x%x", get_field32(dminfo, DMINFO_DRAMSIZE));
+	LOG_DEBUG("  authenticated=0x%x", get_field32(dminfo, DMINFO_AUTHENTICATED));
+	LOG_DEBUG("  authbusy=0x%x", get_field32(dminfo, DMINFO_AUTHBUSY));
+	LOG_DEBUG("  authtype=0x%x", get_field32(dminfo, DMINFO_AUTHTYPE));
+	LOG_DEBUG("  version=0x%x", get_field32(dminfo, DMINFO_VERSION));
 
 	if (get_field(dminfo, DMINFO_VERSION) != 1) {
 		LOG_ERROR("OpenOCD only supports Debug Module version 1, not %d "
-				"(dminfo=0x%x)", get_field(dminfo, DMINFO_VERSION), dminfo);
+				"(dminfo=0x%x)", get_field32(dminfo, DMINFO_VERSION), dminfo);
 		return ERROR_FAIL;
 	}
 
@@ -1590,7 +1584,6 @@ static int examine(struct target *target)
 		return result;
 
 	target_set_examined(target);
-	riscv_set_current_hartid(target, 0);
 	for (size_t i = 0; i < 32; ++i)
 		reg_cache_set(target, i, -1);
 	LOG_INFO("Examined RISCV core; XLEN=%d, misa=0x%" PRIx64,
@@ -1905,7 +1898,13 @@ static int poll_target(struct target *target, bool announce)
 	int old_debug_level = debug_level;
 	if (debug_level >= LOG_LVL_DEBUG)
 		debug_level = LOG_LVL_INFO;
-	bits_t bits = read_bits(target);
+	bits_t bits = {
+		.haltnot = 0,
+		.interrupt = 0
+	};
+	if (read_bits(target, &bits) != ERROR_OK)
+		return ERROR_FAIL;
+
 	debug_level = old_debug_level;
 
 	if (bits.haltnot && bits.interrupt) {
@@ -1937,11 +1936,12 @@ static int riscv011_resume(struct target *target, bool current,
 	jtag_add_ir_scan(target->tap, &select_dbus, TAP_IDLE);
 
 	r->prepped = false;
-	return resume(target, debug_execution, false);
+	return execute_resume(target, false);
 }
 
 static int assert_reset(struct target *target)
 {
+	RISCV_INFO(r);
 	riscv011_info_t *info = get_info(target);
 	/* TODO: Maybe what I implemented here is more like soft_reset_halt()? */
 
@@ -1955,9 +1955,9 @@ static int assert_reset(struct target *target)
 
 	/* Not sure what we should do when there are multiple cores.
 	 * Here just reset the single hart we're talking to. */
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKM, riscv_ebreakm);
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKS, riscv_ebreaks);
-	info->dcsr = set_field(info->dcsr, DCSR_EBREAKU, riscv_ebreaku);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKM, r->riscv_ebreakm);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKS, r->riscv_ebreaks);
+	info->dcsr = set_field(info->dcsr, DCSR_EBREAKU, r->riscv_ebreaku);
 	info->dcsr = set_field(info->dcsr, DCSR_EBREAKH, 1);
 	info->dcsr |= DCSR_HALT;
 	if (target->reset_halt)

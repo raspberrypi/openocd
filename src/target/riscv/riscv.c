@@ -6157,6 +6157,7 @@ int riscv_init_registers(struct target *target)
 				case CSR_MHPMCOUNTER29H:
 				case CSR_MHPMCOUNTER30H:
 				case CSR_MHPMCOUNTER31H:
+				case CSR_MSLEEP:
 					r->exist = riscv_xlen(target) == 32;
 					break;
 

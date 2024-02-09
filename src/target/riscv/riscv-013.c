@@ -3296,6 +3296,234 @@ static int read_memory_bus_v0(struct target *target, target_addr_t address,
 /**
  * Read the requested memory using the system bus interface.
  */
+static int read_memory_bus_v1_no_jtag(struct target *target, target_addr_t address,
+		uint32_t size, uint32_t count, uint8_t *buffer, uint32_t increment)
+{
+	if (increment != size && increment != 0) {
+		LOG_TARGET_ERROR(target, "sba v1 reads only support increment of size or 0");
+		return ERROR_NOT_IMPLEMENTED;
+	}
+
+	RISCV013_INFO(info);
+	unsigned int sbasize = get_field(info->sbcs, DM_SBCS_SBASIZE);
+	target_addr_t chunk_start = address;
+	uint32_t chunk_done = 0;
+	uint32_t count_done = 0;
+	unsigned int retry_count = 0;
+	bool set_sbcs = true;
+	bool set_sbaddr = true;
+	uint32_t sbcs_read = 0;
+	uint32_t sbcs_write = sb_sbaccess(size) | DM_SBCS_SBREADONADDR | DM_SBCS_SBBUSYERROR | DM_SBCS_SBERROR;
+	if (increment == size)
+		sbcs_write = set_field(sbcs_write, DM_SBCS_SBAUTOINCREMENT, 1);
+
+	while (count_done < count) {
+		static const int sbdata[4] = {DM_SBDATA0, DM_SBDATA1, DM_SBDATA2, DM_SBDATA3};
+
+		struct riscv_batch *batch = riscv_batch_alloc(target, RISCV_BATCH_ALLOC_SIZE,
+											info->dmi_busy_delay + info->ac_busy_delay);
+
+		static const struct { unsigned int delay, data; } delay_data[] = {
+			{1, 64}, {1, 24}, {1, 8}, {1, 4}, {1, 2},
+			{1, 1}, {2, 1}, {4, 1}, {8, 1},
+			{1, 1}		/* slowest mode with added wait loops for sbcs busy */
+		};
+		static const unsigned int delay_data_idx_slowest = ARRAY_SIZE(delay_data) - 1;
+		static const unsigned int delay_data_idx_balanced = 5;
+
+		if (info->bus_master_read_delay > delay_data_idx_slowest)
+			info->bus_master_read_delay = delay_data_idx_slowest;
+
+		unsigned int delay_reads = delay_data[info->bus_master_read_delay].delay;
+		unsigned int data_reads = delay_data[info->bus_master_read_delay].data;
+
+		chunk_start = address + count_done * increment;
+		uint32_t chunk_max = count - count_done;
+
+		if (chunk_max == 1)
+			set_sbcs = true;
+
+		LOG_DEBUG("SB read chunk %s%s max 0x%" PRIx32 " delay %u data %u", set_sbcs ? "C" : "",
+				set_sbaddr ? "A" : "", chunk_max, delay_reads, data_reads);
+
+		if (set_sbcs) {
+			sbcs_write = set_field(sbcs_write, DM_SBCS_SBREADONDATA, chunk_max > 1);
+			riscv_batch_add_dm_write(batch, DM_SBCS, sbcs_write, false);
+			set_sbcs = false;
+		}
+
+		if (chunk_max > 1)
+			chunk_max--;
+
+		bool slowest_mode = info->bus_master_read_delay == delay_data_idx_slowest;
+		bool omit_data = false;
+		if (set_sbaddr) {
+			if (sbasize > 32)
+				riscv_batch_add_dm_write(batch, DM_SBADDRESS1, chunk_start >> 32, false);
+			riscv_batch_add_dm_write(batch, DM_SBADDRESS0, (uint32_t)chunk_start, false);
+			set_sbaddr = false;
+			omit_data = slowest_mode;
+		}
+
+		uint32_t chunk_idx = 0;
+		if (!omit_data)
+			while (chunk_idx < chunk_max
+				&& delay_reads + data_reads * size / 4 < riscv_batch_available_scans(batch) - 1) {
+				for (unsigned int i = delay_reads; i; i--)
+					riscv_batch_add_dm_read(batch, DM_SBCS);
+
+				for (unsigned int i = data_reads; i && chunk_idx < chunk_max; i--) {
+					for (int j = (size - 1) / 4; j >= 0; j--)
+						riscv_batch_add_dm_read(batch, sbdata[j]);
+
+					chunk_idx++;
+				}
+				if (slowest_mode)
+					break;
+			}
+
+		riscv_batch_add_dm_read(batch, DM_SBCS);
+
+		int result = batch_run(target, batch);
+		if (result != ERROR_OK) {
+			riscv_batch_free(batch);
+			return result;
+		}
+
+		chunk_max = chunk_idx;
+		bool busy_err = false;
+		bool err = false;
+		unsigned int key = 0;
+		unsigned int busy_margin_min = delay_reads;
+		uint32_t chunk_good = 0;
+
+		for (chunk_idx = 0; chunk_idx < chunk_max; ) {
+			for (unsigned int i = delay_reads; i; i--) {
+				sbcs_read = riscv_batch_get_dmi_read_data(batch, key++);
+				if (get_field(sbcs_read, DM_SBCS_SBBUSYERROR)) {
+					chunk_done = chunk_good;
+					LOG_INFO("SB BUSYERROR detected @ " TARGET_ADDR_FMT,
+							 address + increment * (count_done + chunk_idx));
+					busy_err = true;
+					break;
+				}
+				if (get_field(sbcs_read, DM_SBCS_SBERROR)) {
+					err = true;
+					break;
+				}
+				if (!get_field(sbcs_read, DM_SBCS_SBBUSY)) {
+					busy_margin_min = MIN(busy_margin_min, i);
+					key += i - 1;
+					break;
+				}
+			}
+
+			if (busy_err || err)
+				break;
+
+			chunk_good = chunk_idx;
+
+			if (delay_reads && get_field(sbcs_read, DM_SBCS_SBBUSY))
+				busy_margin_min = 0;
+
+			for (unsigned int i = data_reads; i && chunk_idx < chunk_max; i--) {
+				for (int j = (size - 1) / 4; j >= 0; j--) {
+					uint32_t data = riscv_batch_get_dmi_read_data(batch, key++);
+					uint32_t buffer_offset = (count_done + chunk_idx) * size + j * 4;
+					buf_set_u32(buffer + buffer_offset, 0, 8 * MIN(size, 4), data);
+				}
+				chunk_idx++;
+			}
+		}
+
+		if (!busy_err && !err) {
+			sbcs_read = riscv_batch_get_dmi_read_data(batch, key);
+			if (get_field(sbcs_read, DM_SBCS_SBBUSYERROR)) {
+				LOG_INFO("SB BUSYERROR detected @ chunk end " TARGET_ADDR_FMT,
+						 address + increment * (count_done + chunk_idx));
+				busy_err = true;
+				chunk_done = chunk_good;
+			} else if (get_field(sbcs_read, DM_SBCS_SBERROR)) {
+				err = true;
+			}
+			if (slowest_mode && get_field(sbcs_read, DM_SBCS_SBBUSY)) {
+				result = read_sbcs_nonbusy(target, &sbcs_read);
+				if (result != ERROR_OK)
+					return result;
+			}
+		}
+
+		riscv_batch_free(batch);
+
+		if (err)
+			return ERROR_FAIL;
+
+		static unsigned int count_good;
+		if (busy_err) {
+			set_sbcs = true;
+			set_sbaddr = true;
+
+			if (info->bus_master_read_delay < delay_data_idx_balanced) {
+				info->bus_master_read_delay = delay_data_idx_balanced;
+				retry_count = 0;
+			} else if (info->bus_master_read_delay < delay_data_idx_slowest) {
+				info->bus_master_read_delay++;
+				retry_count = 0;
+			}
+
+		} else if (!err) {
+			chunk_done = chunk_idx;
+
+			if (busy_margin_min) {
+				if (count_good < UINT_MAX - chunk_done)
+					count_good += chunk_done;
+
+				if (delay_reads >= 2 && busy_margin_min > delay_reads / 2) {
+					info->bus_master_read_delay--;
+					count_good = 0;
+				} else if (delay_reads && busy_margin_min >= delay_reads / 2
+							&& count_good > 5000) {
+					if (info->bus_master_read_delay > 0)
+						info->bus_master_read_delay--;
+					count_good = 0;
+				}
+			}
+		}
+
+		LOG_DEBUG("SB read chunk %s " TARGET_ADDR_FMT " " TARGET_ADDR_FMT,
+				busy_err ? "busy err" : err ? "err" : "done",
+				address + increment * count_done, address + increment * (count_done + chunk_done));
+		count_done += chunk_done;
+		if (chunk_done) {
+			retry_count = 0;
+		} else {
+			retry_count++;
+			if (retry_count > 3)
+				err = true;
+		}
+
+		if (busy_err || err) {
+			/* "Writes to sbcs while sbbusy is high result in undefined behavior.
+			 * A debugger must not write to sbcs until it reads sbbusy as 0." */
+			result = read_sbcs_nonbusy(target, &sbcs_read);
+			if (result != ERROR_OK)
+				return result;
+		}
+
+		if (err) {
+			result = dm_write(target, DM_SBCS, DM_SBCS_SBBUSYERROR | DM_SBCS_SBERROR);
+			if (result != ERROR_OK)
+				return result;
+
+			return ERROR_FAIL;
+		}
+	}
+	return ERROR_OK;
+}
+
+/**
+ * Read the requested memory using the system bus interface.
+ */
 static int read_memory_bus_v1(struct target *target, target_addr_t address,
 		uint32_t size, uint32_t count, uint8_t *buffer, uint32_t increment)
 {
@@ -4354,8 +4582,12 @@ static int read_memory(struct target *target, target_addr_t address,
 
 			if (get_field(info->sbcs, DM_SBCS_SBVERSION) == 0)
 				ret = read_memory_bus_v0(target, address, size, count, buffer, increment);
-			else if (get_field(info->sbcs, DM_SBCS_SBVERSION) == 1)
-				ret = read_memory_bus_v1(target, address, size, count, buffer, increment);
+			else if (get_field(info->sbcs, DM_SBCS_SBVERSION) == 1) {
+				if (info->alternative_dmi)
+					ret = read_memory_bus_v1_no_jtag(target, address, size, count, buffer, increment);
+				else
+					ret = read_memory_bus_v1(target, address, size, count, buffer, increment);
+			}
 
 			if (ret != ERROR_OK)
 				sysbus_result = "failed";

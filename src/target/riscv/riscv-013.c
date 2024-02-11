@@ -16,6 +16,7 @@
 #include "target/target.h"
 #include "target/algorithm.h"
 #include "target/target_type.h"
+#include <target/arm_adi_v5.h>
 #include <helper/log.h>
 #include "jtag/jtag.h"
 #include "target/register.h"
@@ -140,6 +141,8 @@ typedef struct {
 	/* The program buffer stores executable code. 0 is an illegal instruction,
 	 * so we use 0 to mean the cached value is invalid. */
 	uint32_t progbuf_cache[16];
+
+	struct adiv5_ap *dmi_ap;
 } dm013_info_t;
 
 typedef struct {
@@ -211,6 +214,9 @@ typedef struct {
 
 	/* This hart was placed into a halt group in examine(). */
 	bool haltgroup_supported;
+
+	/* DM is accessed other way than by JTAG */
+	bool alternative_dmi;
 } riscv013_info_t;
 
 static OOCD_LIST_HEAD(dm_list);
@@ -234,6 +240,7 @@ static dm013_info_t *get_dm(struct target *target)
 	if (info->dm)
 		return info->dm;
 
+	struct riscv_info *r = riscv_info(target);
 	unsigned int abs_chain_position = target->tap->abs_chain_position;
 
 	dm013_info_t *entry;
@@ -259,11 +266,27 @@ static dm013_info_t *get_dm(struct target *target)
 		dm->base = target->dbgbase;
 		dm->current_hartid = 0;
 		dm->hart_count = -1;
+
+		if (r->alternative_dmi) {
+			struct adiv5_private_config *pc = target->private_config;
+			dm->dmi_ap = dap_get_ap(pc->dap, pc->ap_num);
+			if (!dm->dmi_ap) {
+				LOG_TARGET_ERROR(target, "Cannot use %s AP 0x%08" PRIx64 " for DM access",
+								 adiv5_dap_name(pc->dap), pc->ap_num);
+				free(dm);
+				return NULL;
+			}
+		}
+
 		INIT_LIST_HEAD(&dm->target_list);
 		list_add(&dm->list, &dm_list);
 	}
 
 	info->dm = dm;
+
+	if (dm->dmi_ap)
+		info->alternative_dmi = true;
+
 	target_list_t *target_entry;
 	list_for_each_entry(target_entry, &dm->target_list, list) {
 		if (target_entry->target == target)
@@ -297,10 +320,20 @@ static void riscv013_dm_free(struct target *target)
 	}
 
 	if (list_empty(&dm->target_list)) {
+		if (dm->dmi_ap)
+			dap_put_ap(dm->dmi_ap);
+
 		list_del(&dm->list);
 		free(dm);
 	}
 	info->dm = NULL;
+}
+
+static struct adiv5_ap *riscv013_get_dmi_ap(struct target *target)
+{
+	dm013_info_t *dm = get_dm(target);
+
+	return dm->dmi_ap;
 }
 
 static riscv_debug_reg_ctx_t get_riscv_debug_reg_ctx(const struct target *target)
@@ -441,6 +474,10 @@ static void dump_field(struct target *target, int idle, const struct scan_field 
 
 static void select_dmi(struct target *target)
 {
+	riscv013_info_t *info = get_info(target);
+	if (info->alternative_dmi)
+		return;
+
 	if (bscan_tunnel_ir_width != 0) {
 		select_dmi_via_bscan(target);
 		return;
@@ -453,6 +490,12 @@ static int dtmcontrol_scan(struct target *target, uint32_t out, uint32_t *in_ptr
 	struct scan_field field;
 	uint8_t in_value[4];
 	uint8_t out_value[4] = { 0 };
+
+	riscv013_info_t *info = get_info(target);
+	if (info->alternative_dmi) {
+		LOG_ERROR("JTAG DMI not available");
+		return ERROR_FAIL;
+	}
 
 	if (bscan_tunnel_ir_width != 0)
 		return dtmcontrol_scan_via_bscan(target, out, in_ptr);
@@ -514,6 +557,11 @@ static dmi_status_t dmi_scan(struct target *target, uint32_t *address_in,
 		.in_value = in
 	};
 	riscv_bscan_tunneled_scan_context_t bscan_ctxt;
+
+	if (info->alternative_dmi) {
+		LOG_ERROR("JTAG DMI not available");
+		return ERROR_FAIL;
+	}
 
 	if (r->reset_delays_wait >= 0) {
 		r->reset_delays_wait--;
@@ -598,6 +646,25 @@ static int dmi_op_timeout(struct target *target, uint32_t *data_in,
 		bool *dmi_busy_encountered, int op, uint32_t address,
 		uint32_t data_out, int timeout_sec, bool exec, bool ensure_success)
 {
+	dm013_info_t *dm = get_dm(target);
+	if (!dm)
+		return ERROR_FAIL;
+
+	if (dm->dmi_ap) {
+		uint32_t dummy;
+		switch (op) {
+		case DMI_OP_READ:
+			return mem_ap_read_atomic_u32(dm->dmi_ap, address * 4,
+					data_in ? data_in : &dummy);
+		case DMI_OP_WRITE:
+			return mem_ap_write_atomic_u32(dm->dmi_ap, address * 4, data_out);
+		case DMI_OP_NOP:
+		default:
+			LOG_ERROR("Invalid DMI operation: %d", op);
+			return ERROR_FAIL;
+		}
+	}
+
 	select_dmi(target);
 
 	dmi_status_t status;
@@ -1922,26 +1989,33 @@ static int examine(struct target *target)
 	/* Don't need to select dbus, since the first thing we do is read dtmcontrol. */
 	LOG_TARGET_DEBUG(target, "dbgbase=0x%x", target->dbgbase);
 
-	uint32_t dtmcontrol;
-	if (dtmcontrol_scan(target, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
-		LOG_TARGET_ERROR(target, "Could not scan dtmcontrol. Check JTAG connectivity/board power.");
-		return ERROR_FAIL;
-	}
-
-	LOG_TARGET_DEBUG(target, "dtmcontrol=0x%x", dtmcontrol);
-	LOG_DEBUG_REG(target, DTM_DTMCS, dtmcontrol);
-
-	if (get_field(dtmcontrol, DTM_DTMCS_VERSION) != 1) {
-		LOG_TARGET_ERROR(target, "Unsupported DTM version %" PRIu32 ". (dtmcontrol=0x%" PRIx32 ")",
-				get_field32(dtmcontrol, DTM_DTMCS_VERSION), dtmcontrol);
-		return ERROR_FAIL;
-	}
-
 	riscv013_info_t *info = get_info(target);
 
 	info->index = target->coreid;
-	info->abits = get_field(dtmcontrol, DTM_DTMCS_ABITS);
-	info->dtmcs_idle = get_field(dtmcontrol, DTM_DTMCS_IDLE);
+
+	dm013_info_t *dm = get_dm(target);
+	if (!dm)
+		return ERROR_FAIL;
+
+	if (!info->alternative_dmi) {
+		uint32_t dtmcontrol;
+		if (dtmcontrol_scan(target, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
+			LOG_TARGET_ERROR(target, "Could not scan dtmcontrol. Check JTAG connectivity/board power.");
+			return ERROR_FAIL;
+		}
+
+		LOG_TARGET_DEBUG(target, "dtmcontrol=0x%x", dtmcontrol);
+		LOG_DEBUG_REG(target, DTM_DTMCS, dtmcontrol);
+
+		if (get_field(dtmcontrol, DTM_DTMCS_VERSION) != 1) {
+			LOG_TARGET_ERROR(target, "Unsupported DTM version %" PRIu32 ". (dtmcontrol=0x%" PRIx32 ")",
+					get_field32(dtmcontrol, DTM_DTMCS_VERSION), dtmcontrol);
+			return ERROR_FAIL;
+		}
+
+		info->abits = get_field(dtmcontrol, DTM_DTMCS_ABITS);
+		info->dtmcs_idle = get_field(dtmcontrol, DTM_DTMCS_IDLE);
+	}
 
 	if (!check_dbgbase_exists(target)) {
 		LOG_TARGET_ERROR(target, "Could not find debug module with DMI base address (dbgbase) = 0x%x", target->dbgbase);
@@ -1949,9 +2023,6 @@ static int examine(struct target *target)
 	}
 
 	/* Reset the Debug Module. */
-	dm013_info_t *dm = get_dm(target);
-	if (!dm)
-		return ERROR_FAIL;
 	if (!dm->was_reset) {
 		dm_write(target, DM_DMCONTROL, 0);
 		dm_write(target, DM_DMCONTROL, DM_DMCONTROL_DMACTIVE);
@@ -2822,6 +2893,8 @@ static int init_target(struct command_context *cmd_ctx,
 			return ERROR_FAIL;
 	}
 	generic_info->sample_memory = sample_memory;
+	generic_info->get_dmi_ap = riscv013_get_dmi_ap;
+
 	riscv013_info_t *info = get_info(target);
 
 	info->progbufsize = -1;

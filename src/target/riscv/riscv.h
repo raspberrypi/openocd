@@ -258,6 +258,8 @@ struct riscv_info {
 
 	unsigned (*data_bits)(struct target *target);
 
+	struct adiv5_ap *(*get_dmi_ap)(struct target *target);
+
 	COMMAND_HELPER((*print_info), struct target *target);
 
 	/* Storage for vector register types. */
@@ -317,6 +319,8 @@ struct riscv_info {
 	bool wp_allow_equality_match_trigger;
 	bool wp_allow_napot_trigger;
 	bool wp_allow_ge_lt_trigger;
+
+	bool alternative_dmi;
 };
 
 COMMAND_HELPER(riscv_print_info_line, const char *section, const char *key,
@@ -433,6 +437,10 @@ void riscv_fill_dm_nop(struct target *target, char *buf);
 void riscv_fill_dm_write(struct target *target, char *buf, uint64_t a, uint32_t d);
 void riscv_fill_dm_read(struct target *target, char *buf, uint64_t a);
 int riscv_get_dmi_scan_length(struct target *target);
+
+uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_address);
+int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t dmi_address);
+int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value);
 
 int riscv_enumerate_triggers(struct target *target);
 

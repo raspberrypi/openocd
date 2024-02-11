@@ -12,6 +12,7 @@ struct riscv_program;
 #include "target/semihosting_common.h"
 #include "target/target.h"
 #include "target/register.h"
+#include <target/arm_adi_v5.h>
 #include <helper/command.h>
 #include <helper/bits.h>
 
@@ -307,6 +308,8 @@ struct riscv_info {
 
 	unsigned int (*data_bits)(struct target *target);
 
+	struct adiv5_ap *(*get_dmi_ap)(struct target *target);
+
 	COMMAND_HELPER((*print_info), struct target *target);
 
 	/* Storage for arch_info of non-custom registers. */
@@ -365,6 +368,8 @@ struct riscv_info {
 	bool wp_allow_ge_lt_trigger;
 
 	bool autofence;
+
+	bool alternative_dmi;
 };
 
 enum riscv_priv_mode {
@@ -378,6 +383,7 @@ enum riscv_priv_mode {
 
 struct riscv_private_config {
 	bool dcsr_ebreak_fields[N_RISCV_MODE];
+	struct adiv5_private_config adi_pc;
 };
 
 static inline struct riscv_private_config
@@ -486,6 +492,9 @@ void riscv_fill_dmi_read(const struct target *target, uint8_t *buf, uint32_t a);
 unsigned int riscv_get_dmi_address_bits(const struct target *target);
 
 uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_address);
+
+int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t dmi_address);
+int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value);
 
 int riscv_enumerate_triggers(struct target *target);
 

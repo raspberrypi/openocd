@@ -7,6 +7,8 @@
 #include "jtag/jtag.h"
 #include "riscv.h"
 
+#include "target/arm_adi_v5.h"
+
 enum riscv_scan_type {
 	RISCV_SCAN_TYPE_INVALID,
 	RISCV_SCAN_TYPE_NOP,
@@ -159,6 +161,10 @@ struct riscv_batch {
 	 * Only valid when `was_run` is set.
 	 */
 	unsigned int last_scan_delay;
+
+	bool emulated;
+	int queued_retval;
+	struct adiv5_ap *ap;
 };
 
 /* Allocates (or frees) a new scan set.  "scans" is the maximum number of JTAG

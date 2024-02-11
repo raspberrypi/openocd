@@ -13,6 +13,7 @@
 #include "target/target.h"
 #include "target/algorithm.h"
 #include "target/target_type.h"
+#include <target/arm_adi_v5.h>
 #include <target/smp.h>
 #include "jtag/jtag.h"
 #include "target/register.h"
@@ -477,7 +478,7 @@ static struct target_type *get_target_type(struct target *target)
 
 static struct riscv_private_config *alloc_default_riscv_private_config(void)
 {
-	struct riscv_private_config * const config = malloc(sizeof(*config));
+	struct riscv_private_config * const config = calloc(1, sizeof(*config));
 	if (!config) {
 		LOG_ERROR("Out of memory!");
 		return NULL;
@@ -638,7 +639,7 @@ static int riscv_jim_configure(struct target *target,
 	int e = jim_nvp_name2value_obj(goi->interp, nvp_config_opts,
 				goi->argv[0], &n);
 	if (e != JIM_OK)
-		return JIM_CONTINUE;
+		return adiv5_jim_configure_ext(target, goi, &config->adi_pc, ADI_CONFIGURE_DAP_OPTIONAL);
 
 	e = jim_getopt_obj(goi, NULL);
 	if (e != JIM_OK)
@@ -755,7 +756,6 @@ static void riscv_deinit_target(struct target *target)
 	}
 
 	free(target->arch_info);
-
 	target->arch_info = NULL;
 }
 
@@ -2480,14 +2480,23 @@ static int riscv_examine(struct target *target)
 	/* Don't need to select dbus, since the first thing we do is read dtmcontrol. */
 
 	RISCV_INFO(info);
-	uint32_t dtmcontrol;
-	if (dtmcs_scan(target->tap, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
-		LOG_TARGET_ERROR(target, "Could not read dtmcontrol. Check JTAG connectivity/board power.");
-		return ERROR_FAIL;
+	uint32_t dtm_version;
+
+	struct adiv5_private_config *pc = target->private_config;
+	if (adiv5_verify_config(pc) == ERROR_OK) {
+		dtm_version = 1;
+		info->alternative_dmi = true;
+	} else {
+		uint32_t dtmcontrol;
+		if (dtmcs_scan(target->tap, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
+			LOG_TARGET_ERROR(target, "Could not read dtmcontrol. Check JTAG connectivity/board power.");
+			return ERROR_FAIL;
+		}
+
+		LOG_TARGET_DEBUG(target, "dtmcontrol=0x%" PRIx32, dtmcontrol);
+		dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
+		LOG_TARGET_DEBUG(target, "version=0x%" PRIx32, dtm_version);
 	}
-	LOG_TARGET_DEBUG(target, "dtmcontrol=0x%" PRIx32, dtmcontrol);
-	uint32_t dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
-	LOG_TARGET_DEBUG(target, "version=0x%" PRIx32, dtm_version);
 
 	struct target_type *tt;
 	if (info->dtm_version == DTM_DTMCS_VERSION_UNKNOWN) {
@@ -4663,7 +4672,7 @@ uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_address)
 	return r->get_dmi_address(target, dm_address);
 }
 
-static int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t address)
+int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t address)
 {
 	if (!target) {
 		LOG_ERROR("target is NULL!");
@@ -4681,7 +4690,7 @@ static int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t addre
 	return r->dmi_read(target, value, address);
 }
 
-static int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value)
+int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value)
 {
 	if (!target) {
 		LOG_ERROR("target is NULL!");

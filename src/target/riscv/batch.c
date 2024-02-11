@@ -9,6 +9,8 @@
 #include "riscv.h"
 #include "field_helpers.h"
 
+#include <target/arm_adi_v5.h>
+
 #define DTM_DMI_MAX_ADDRESS_LENGTH	((1<<DTM_DTMCS_ABITS_LENGTH)-1)
 #define DMI_SCAN_MAX_BIT_LENGTH (DTM_DMI_MAX_ADDRESS_LENGTH + DTM_DMI_DATA_LENGTH + DTM_DMI_OP_LENGTH)
 #define DMI_SCAN_BUF_SIZE (DIV_ROUND_UP(DMI_SCAN_MAX_BIT_LENGTH, 8))
@@ -38,29 +40,39 @@ struct riscv_batch *riscv_batch_alloc(struct target *target, size_t scans, size_
 	out->bscan_ctxt = NULL;
 	out->read_keys = NULL;
 
-	/* FIXME: There is potential for memory usage reduction. We could allocate
-	 * smaller buffers than DMI_SCAN_BUF_SIZE (that is, buffers that correspond to
-	 * the real DR scan length on the given target) */
-	out->data_out = malloc(sizeof(*out->data_out) * scans * DMI_SCAN_BUF_SIZE);
-	if (!out->data_out) {
-		LOG_ERROR("Failed to allocate data_out in RISC-V batch.");
-		goto alloc_error;
-	};
+	struct riscv_info *r = riscv_info(target);
+	out->emulated = r->alternative_dmi;
+
+	if (out->emulated && r->get_dmi_ap)
+		out->ap = r->get_dmi_ap(target);
+
+	if (!out->emulated) {
+		/* FIXME: There is potential for memory usage reduction. We could allocate
+		 * smaller buffers than DMI_SCAN_BUF_SIZE (that is, buffers that correspond to
+		 * the real DR scan length on the given target) */
+		out->data_out = malloc(sizeof(*out->data_out) * scans * DMI_SCAN_BUF_SIZE);
+		if (!out->data_out) {
+			LOG_ERROR("Failed to allocate data_out in RISC-V batch.");
+			goto alloc_error;
+		};
+	}
 	out->data_in = malloc(sizeof(*out->data_in) * scans * DMI_SCAN_BUF_SIZE);
 	if (!out->data_in) {
 		LOG_ERROR("Failed to allocate data_in in RISC-V batch.");
 		goto alloc_error;
 	}
-	out->fields = malloc(sizeof(*out->fields) * scans);
-	if (!out->fields) {
-		LOG_ERROR("Failed to allocate fields in RISC-V batch.");
-		goto alloc_error;
-	}
-	if (bscan_tunnel_ir_width != 0) {
-		out->bscan_ctxt = malloc(sizeof(*out->bscan_ctxt) * scans);
-		if (!out->bscan_ctxt) {
-			LOG_ERROR("Failed to allocate bscan_ctxt in RISC-V batch.");
+	if (!out->emulated) {
+		out->fields = malloc(sizeof(*out->fields) * scans);
+		if (!out->fields) {
+			LOG_ERROR("Failed to allocate fields in RISC-V batch.");
 			goto alloc_error;
+		}
+		if (bscan_tunnel_ir_width != 0) {
+			out->bscan_ctxt = malloc(sizeof(*out->bscan_ctxt) * scans);
+			if (!out->bscan_ctxt) {
+				LOG_ERROR("Failed to allocate bscan_ctxt in RISC-V batch.");
+				goto alloc_error;
+			}
 		}
 	}
 	out->read_keys = malloc(sizeof(*out->read_keys) * scans);
@@ -95,6 +107,13 @@ int riscv_batch_run(struct riscv_batch *batch)
 {
 	if (batch->used_scans == 0) {
 		LOG_TARGET_DEBUG(batch->target, "Ignoring empty batch.");
+		return ERROR_OK;
+	}
+
+	if (batch->emulated) {
+		if (batch->ap)
+			return dap_run(batch->ap->dap);
+
 		return ERROR_OK;
 	}
 
@@ -137,6 +156,22 @@ void riscv_batch_add_dm_write(struct riscv_batch *batch, uint64_t address, uint3
 	bool read_back)
 {
 	assert(batch->used_scans < batch->allocated_scans);
+	if (batch->emulated) {
+		if (read_back)
+			LOG_ERROR("riscv_batch_add_dm_write() with read_back not yet supported");
+
+		if (batch->queued_retval == ERROR_OK) {
+			if (batch->ap) {
+				uint32_t dmi_addr = 4 * riscv_get_dmi_address(batch->target, address);
+				batch->queued_retval = mem_ap_write_u32(batch->ap, dmi_addr, data);
+			} else {
+				uint32_t dmi_addr = riscv_get_dmi_address(batch->target, address);
+				batch->queued_retval = riscv_dmi_write(batch->target, dmi_addr, data);
+			}
+		}
+		batch->last_scan = RISCV_SCAN_TYPE_WRITE;
+		return;
+	}
 	struct scan_field *field = batch->fields + batch->used_scans;
 	field->num_bits = riscv_get_dmi_scan_length(batch->target);
 	field->out_value = (void *)(batch->data_out + batch->used_scans * DMI_SCAN_BUF_SIZE);
@@ -154,22 +189,44 @@ void riscv_batch_add_dm_write(struct riscv_batch *batch, uint64_t address, uint3
 size_t riscv_batch_add_dm_read(struct riscv_batch *batch, uint64_t address)
 {
 	assert(batch->used_scans < batch->allocated_scans);
-	struct scan_field *field = batch->fields + batch->used_scans;
-	field->num_bits = riscv_get_dmi_scan_length(batch->target);
-	field->out_value = (void *)(batch->data_out + batch->used_scans * DMI_SCAN_BUF_SIZE);
-	field->in_value  = (void *)(batch->data_in  + batch->used_scans * DMI_SCAN_BUF_SIZE);
-	riscv_fill_dm_read(batch->target, (char *)field->out_value, address);
-	riscv_fill_dm_nop(batch->target, (char *)field->in_value);
+	if (batch->emulated) {
+		if (batch->queued_retval == ERROR_OK) {
+			uint32_t *data_in = (uint32_t *)batch->data_in;
+			data_in = &data_in[batch->used_scans];
+			if (batch->ap) {
+				uint32_t dmi_addr = 4 * riscv_get_dmi_address(batch->target, address);
+				batch->queued_retval = mem_ap_read_u32(batch->ap, dmi_addr, data_in);
+			} else {
+				uint32_t dmi_addr = riscv_get_dmi_address(batch->target, address);
+				batch->queued_retval = riscv_dmi_read(batch->target,
+										   data_in, dmi_addr);
+			}
+		}
+		batch->read_keys[batch->read_keys_used] = batch->used_scans;
+	} else {
+		struct scan_field *field = batch->fields + batch->used_scans;
+		field->num_bits = riscv_get_dmi_scan_length(batch->target);
+		field->out_value = (void *)(batch->data_out + batch->used_scans * DMI_SCAN_BUF_SIZE);
+		field->in_value  = (void *)(batch->data_in  + batch->used_scans * DMI_SCAN_BUF_SIZE);
+		riscv_fill_dm_read(batch->target, (char *)field->out_value, address);
+		riscv_fill_dm_nop(batch->target, (char *)field->in_value);
+		batch->read_keys[batch->read_keys_used] = batch->used_scans + 1;
+	}
 	batch->last_scan = RISCV_SCAN_TYPE_READ;
 	batch->used_scans++;
 
-	batch->read_keys[batch->read_keys_used] = batch->used_scans;
 	return batch->read_keys_used++;
 }
 
 unsigned int riscv_batch_get_dmi_read_op(const struct riscv_batch *batch, size_t key)
 {
 	assert(key < batch->read_keys_used);
+	if (batch->emulated) {
+		if (batch->queued_retval == ERROR_OK)
+			return DTM_DMI_OP_SUCCESS;
+		else
+			return DTM_DMI_OP_FAILED;
+	}
 	size_t index = batch->read_keys[key];
 	assert(index < batch->used_scans);
 	uint8_t *base = batch->data_in + DMI_SCAN_BUF_SIZE * index;
@@ -182,6 +239,10 @@ uint32_t riscv_batch_get_dmi_read_data(const struct riscv_batch *batch, size_t k
 	assert(key < batch->read_keys_used);
 	size_t index = batch->read_keys[key];
 	assert(index < batch->used_scans);
+	if (batch->emulated) {
+		uint32_t *data_in = (uint32_t *)batch->data_in;
+		return data_in[index];
+	}
 	uint8_t *base = batch->data_in + DMI_SCAN_BUF_SIZE * index;
 	/* extract "data" field from the DMI read result */
 	return buf_get_u32(base, DTM_DMI_DATA_OFFSET, DTM_DMI_DATA_LENGTH);
@@ -190,6 +251,9 @@ uint32_t riscv_batch_get_dmi_read_data(const struct riscv_batch *batch, size_t k
 void riscv_batch_add_nop(struct riscv_batch *batch)
 {
 	assert(batch->used_scans < batch->allocated_scans);
+	if (batch->emulated)
+		return;
+
 	struct scan_field *field = batch->fields + batch->used_scans;
 	field->num_bits = riscv_get_dmi_scan_length(batch->target);
 	field->out_value = (void *)(batch->data_out + batch->used_scans * DMI_SCAN_BUF_SIZE);
@@ -242,6 +306,9 @@ bool riscv_batch_dmi_busy_encountered(const struct riscv_batch *batch)
 {
 	if (batch->used_scans == 0)
 		/* Empty batch */
+		return false;
+
+	if (batch->emulated)
 		return false;
 
 	assert(batch->last_scan == RISCV_SCAN_TYPE_NOP);

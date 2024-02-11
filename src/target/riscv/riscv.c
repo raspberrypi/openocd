@@ -13,6 +13,7 @@
 #include "target/target.h"
 #include "target/algorithm.h"
 #include "target/target_type.h"
+#include <target/arm_adi_v5.h>
 #include <target/smp.h>
 #include "jtag/jtag.h"
 #include "target/register.h"
@@ -444,6 +445,11 @@ static int riscv_create_target(struct target *target)
 	return ERROR_OK;
 }
 
+static int riscv_jim_configure(struct target *target, struct jim_getopt_info *goi)
+{
+	return adiv5_jim_configure_ext(target, goi, NULL, ADI_CONFIGURE_DAP_OPTIONAL);
+}
+
 static int riscv_init_target(struct command_context *cmd_ctx,
 		struct target *target)
 {
@@ -568,8 +574,8 @@ static void riscv_deinit_target(struct target *target)
 	}
 
 	free_reg_names(target);
+	free(target->private_config);
 	free(target->arch_info);
-
 	target->arch_info = NULL;
 }
 
@@ -1734,13 +1740,20 @@ static int riscv_examine(struct target *target)
 
 	RISCV_INFO(info);
 	uint32_t dtmcontrol;
-	if (dtmcontrol_scan(target, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
-		LOG_TARGET_ERROR(target, "Could not read dtmcontrol. Check JTAG connectivity/board power.");
-		return ERROR_FAIL;
+
+	struct adiv5_private_config *pc = target->private_config;
+	if (adiv5_verify_config(pc) == ERROR_OK) {
+		info->dtm_version = 1;
+		info->alternative_dmi = true;
+	} else {
+		if (dtmcontrol_scan(target, 0, &dtmcontrol) != ERROR_OK || dtmcontrol == 0) {
+			LOG_TARGET_ERROR(target, "Could not read dtmcontrol. Check JTAG connectivity/board power.");
+			return ERROR_FAIL;
+		}
+		LOG_TARGET_DEBUG(target, "dtmcontrol=0x%x", dtmcontrol);
+		info->dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
+		LOG_TARGET_DEBUG(target, "version=0x%x", info->dtm_version);
 	}
-	LOG_TARGET_DEBUG(target, "dtmcontrol=0x%x", dtmcontrol);
-	info->dtm_version = get_field(dtmcontrol, DTMCONTROL_VERSION);
-	LOG_TARGET_DEBUG(target, "version=0x%x", info->dtm_version);
 
 	int examine_status = ERROR_FAIL;
 	struct target_type *tt = get_target_type(target);
@@ -3714,7 +3727,7 @@ COMMAND_HANDLER(riscv_authdata_write)
 	return r->authdata_write(target, value, index);
 }
 
-static uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_address)
+uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_address)
 {
 	assert(target);
 	RISCV_INFO(r);
@@ -3723,7 +3736,7 @@ static uint32_t riscv_get_dmi_address(const struct target *target, uint32_t dm_a
 	return r->get_dmi_address(target, dm_address);
 }
 
-static int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t address)
+int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t address)
 {
 	if (!target) {
 		LOG_ERROR("target is NULL!");
@@ -3741,7 +3754,7 @@ static int riscv_dmi_read(struct target *target, uint32_t *value, uint32_t addre
 	return r->dmi_read(target, value, address);
 }
 
-static int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value)
+int riscv_dmi_write(struct target *target, uint32_t dmi_address, uint32_t value)
 {
 	if (!target) {
 		LOG_ERROR("target is NULL!");
@@ -4869,6 +4882,7 @@ struct target_type riscv_target = {
 	.name = "riscv",
 
 	.target_create = riscv_create_target,
+	.target_jim_configure = riscv_jim_configure,
 	.init_target = riscv_init_target,
 	.deinit_target = riscv_deinit_target,
 	.examine = riscv_examine,

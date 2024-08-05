@@ -3234,6 +3234,7 @@ int riscv_openocd_poll(struct target *target)
 	unsigned int should_resume = 0;
 	unsigned int halted = 0;
 	unsigned int running = 0;
+	unsigned int running_under_debug = 0;
 	struct target_list *entry;
 	foreach_smp_target(entry, targets) {
 		struct target *t = entry->target;
@@ -3257,6 +3258,8 @@ int riscv_openocd_poll(struct target *target)
 				if (t->state == TARGET_RUNNING ||
 					t->state == TARGET_DEBUG_RUNNING)
 					running++;
+				if (t->state == TARGET_DEBUG_RUNNING)
+					running_under_debug++;
 				break;
 			case RPH_REMAIN_HALTED:
 				should_remain_halted++;
@@ -3280,7 +3283,10 @@ int riscv_openocd_poll(struct target *target)
 	} else if (should_resume) {
 		LOG_TARGET_DEBUG(target, "resume all");
 		riscv_resume(target, true, 0, 0, 0, false);
-	} else if (halted && running) {
+	} else if (halted && running && (running_under_debug != running)) {
+		/* Note we don't halt when harts are running *under debug control*
+		   (state == TARGET_DEBUG_RUNNING) because this causes early abort of
+		   long-running algorithms running on a single core under SMP. */
 		LOG_TARGET_DEBUG(target, "halt all; halted=%d",
 			halted);
 		riscv_halt(target);

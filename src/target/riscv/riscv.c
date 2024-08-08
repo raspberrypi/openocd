@@ -1753,7 +1753,7 @@ static int riscv_examine(struct target *target)
 
 	examine_status = tt->examine(target);
 	if (examine_status != ERROR_OK)
-		goto examine_fail;
+		return examine_status;
 
 	return ERROR_OK;
 

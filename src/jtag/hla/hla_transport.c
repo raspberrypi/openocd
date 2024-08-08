@@ -18,7 +18,6 @@
 #include <transport/transport.h>
 #include <helper/time_support.h>
 #include <target/target.h>
-#include <jtag/hla/hla_tcl.h>
 #include <jtag/hla/hla_transport.h>
 #include <jtag/hla/hla_interface.h>
 
@@ -38,8 +37,16 @@ static const struct command_registration hl_swd_transport_subcommand_handlers[] 
 	{
 	 .name = "newdap",
 	 .mode = COMMAND_CONFIG,
-	 .jim_handler = jim_hl_newtap,
+	 .handler = handle_jtag_newtap,
 	 .help = "declare a new SWD DAP",
+	 .usage = "basename dap_type ['-irlen' count] "
+			"['-enable'|'-disable'] "
+			"['-expected_id' number] "
+			"['-ignore-version'] "
+			"['-ignore-bypass'] "
+			"['-ircapture' number] "
+			"['-ir-bypass' number] "
+			"['-mask' number]",
 	 },
 	COMMAND_REGISTRATION_DONE
 };
@@ -59,11 +66,17 @@ static const struct command_registration hl_transport_jtag_subcommand_handlers[]
 	{
 	 .name = "newtap",
 	 .mode = COMMAND_CONFIG,
-	 .jim_handler = jim_hl_newtap,
+	 .handler = handle_jtag_newtap,
 	 .help = "Create a new TAP instance named basename.tap_type, "
 	 "and appends it to the scan chain.",
 	 .usage = "basename tap_type '-irlen' count "
-	 "['-expected_id' number]",
+			"['-enable'|'-disable'] "
+			"['-expected_id' number] "
+			"['-ignore-version'] "
+			"['-ignore-bypass'] "
+			"['-ircapture' number] "
+			"['-ir-bypass' number] "
+			"['-mask' number]",
 	 },
 	{
 	 .name = "init",
@@ -86,12 +99,18 @@ static const struct command_registration hl_transport_jtag_subcommand_handlers[]
 	{
 	 .name = "tapisenabled",
 	 .mode = COMMAND_EXEC,
-	 .jim_handler = jim_jtag_tap_enabler,
+	 .handler = handle_jtag_tap_enabler,
+	 .help = "Returns a Tcl boolean (0/1) indicating whether "
+		"the TAP is enabled (1) or not (0).",
+	 .usage = "tap_name",
 	 },
 	{
 	 .name = "tapenable",
 	 .mode = COMMAND_EXEC,
-	 .jim_handler = jim_jtag_tap_enabler,
+	 .handler = handle_jtag_tap_enabler,
+	 .help = "Try to enable the specified TAP using the "
+		"'tap-enable' TAP event.",
+	 .usage = "tap_name",
 	 },
 	{
 	 .name = "tapdisable",
@@ -108,7 +127,8 @@ static const struct command_registration hl_transport_jtag_subcommand_handlers[]
 	{
 	 .name = "cget",
 	 .mode = COMMAND_EXEC,
-	 .jim_handler = jim_jtag_configure,
+	 .handler = handle_jtag_configure,
+	 .usage = "",
 	 },
 	{
 	 .name = "names",

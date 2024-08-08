@@ -102,6 +102,13 @@ struct rtos_register_stacking {
 		const struct rtos_register_stacking *stacking,
 		target_addr_t stack_ptr);
 	const struct stack_register_offset *register_offsets;
+	/* Optional field for targets which may have to implement their own stack read function.
+	 * Because stack format can be weird or stack data needed to be edited before passing to the gdb.
+	 */
+	int (*read_stack)(struct target *target,
+		int64_t stack_ptr,
+		const struct rtos_register_stacking *stacking,
+		uint8_t *stack_data);
 };
 
 #define GDB_THREAD_PACKET_NOT_CONSUMED (-40)
@@ -116,6 +123,7 @@ int rtos_generic_stack_read(struct target *target,
 		struct rtos_reg **reg_list,
 		int *num_regs);
 int gdb_thread_packet(struct connection *connection, char const *packet, int packet_size);
+int rtos_thread_packet(struct connection *connection, const char *packet, int packet_size);
 int rtos_get_gdb_reg(struct connection *connection, int reg_num);
 int rtos_get_gdb_reg_list(struct connection *connection);
 int rtos_update_threads(struct target *target);
@@ -127,5 +135,20 @@ int rtos_read_buffer(struct target *target, target_addr_t address,
 		uint32_t size, uint8_t *buffer);
 int rtos_write_buffer(struct target *target, target_addr_t address,
 		uint32_t size, const uint8_t *buffer);
+
+extern const struct rtos_type chibios_rtos;
+extern const struct rtos_type chromium_ec_rtos;
+extern const struct rtos_type ecos_rtos;
+extern const struct rtos_type embkernel_rtos;
+extern const struct rtos_type freertos_rtos;
+extern const struct rtos_type hwthread_rtos;
+extern const struct rtos_type linux_rtos;
+extern const struct rtos_type mqx_rtos;
+extern const struct rtos_type nuttx_rtos;
+extern const struct rtos_type riot_rtos;
+extern const struct rtos_type rtkernel_rtos;
+extern const struct rtos_type threadx_rtos;
+extern const struct rtos_type ucos_iii_rtos;
+extern const struct rtos_type zephyr_rtos;
 
 #endif /* OPENOCD_RTOS_RTOS_H */

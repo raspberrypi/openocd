@@ -78,7 +78,7 @@
 #define SAMD_GET_DEVSEL(id) (id & 0xFF)
 
 /* Bits to mask out lockbits in user row */
-#define NVMUSERROW_LOCKBIT_MASK ((uint64_t)0x0000FFFFFFFFFFFF)
+#define NVMUSERROW_LOCKBIT_MASK 0x0000FFFFFFFFFFFFULL
 
 struct samd_part {
 	uint8_t id;
@@ -243,8 +243,12 @@ static const struct samd_part saml21_parts[] = {
 	{ 0x1F, "SAMR30E18A", 256, 32 },
 
     /* SAMR34/R35 parts have integrated SAML21 with a lora radio */
-	{ 0x28, "SAMR34J18", 256, 32 },
-	{ 0x2B, "SAMR35J18", 256, 32 },
+	{ 0x28, "SAMR34J18", 256, 40 },
+	{ 0x29, "SAMR34J17", 128, 24 },
+	{ 0x2A, "SAMR34J16", 64, 12 },
+	{ 0x2B, "SAMR35J18", 256, 40 },
+	{ 0x2C, "SAMR35J17", 128, 24 },
+	{ 0x2D, "SAMR35J16", 64, 12 },
 };
 
 /* Known SAML22 parts. */
@@ -312,31 +316,31 @@ struct samd_family {
 static const struct samd_family samd_families[] = {
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_D, SAMD_SERIES_20,
 		samd20_parts, ARRAY_SIZE(samd20_parts),
-		(uint64_t)0xFFFF01FFFE01FF77 },
+		0xFFFF01FFFE01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_D, SAMD_SERIES_21,
 		samd21_parts, ARRAY_SIZE(samd21_parts),
-		(uint64_t)0xFFFF01FFFE01FF77 },
+		0xFFFF01FFFE01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_D, SAMD_SERIES_09,
 		samd09_parts, ARRAY_SIZE(samd09_parts),
-		(uint64_t)0xFFFF01FFFE01FF77 },
+		0xFFFF01FFFE01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_D, SAMD_SERIES_10,
 		samd10_parts, ARRAY_SIZE(samd10_parts),
-		(uint64_t)0xFFFF01FFFE01FF77 },
+		0xFFFF01FFFE01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_D, SAMD_SERIES_11,
 		samd11_parts, ARRAY_SIZE(samd11_parts),
-		(uint64_t)0xFFFF01FFFE01FF77 },
+		0xFFFF01FFFE01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_L, SAMD_SERIES_21,
 		saml21_parts, ARRAY_SIZE(saml21_parts),
-		(uint64_t)0xFFFF03FFFC01FF77 },
+		0xFFFF03FFFC01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_L, SAMD_SERIES_22,
 		saml22_parts, ARRAY_SIZE(saml22_parts),
-		(uint64_t)0xFFFF03FFFC01FF77 },
+		0xFFFF03FFFC01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_20,
 		samc20_parts, ARRAY_SIZE(samc20_parts),
-		(uint64_t)0xFFFF03FFFC01FF77 },
+		0xFFFF03FFFC01FF77ULL },
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_21,
 		samc21_parts, ARRAY_SIZE(samc21_parts),
-		(uint64_t)0xFFFF03FFFC01FF77 },
+		0xFFFF03FFFC01FF77ULL },
 };
 
 struct samd_info {

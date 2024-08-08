@@ -83,9 +83,9 @@ static void usbprog_jtag_write_slice(struct usbprog_jtag *usbprog_jtag, unsigned
 static void usbprog_jtag_set_bit(struct usbprog_jtag *usbprog_jtag, int bit, int value);
 /* static int usbprog_jtag_get_bit(struct usbprog_jtag *usbprog_jtag, int bit); */
 
-static int usbprog_execute_queue(void)
+static int usbprog_execute_queue(struct jtag_command *cmd_queue)
 {
-	struct jtag_command *cmd = jtag_command_queue;	/* currently processed command */
+	struct jtag_command *cmd = cmd_queue;	/* currently processed command */
 	int scan_size;
 	enum scan_type type;
 	uint8_t *buffer;
@@ -148,7 +148,7 @@ static int usbprog_init(void)
 	usbprog_jtag_handle = usbprog_jtag_open();
 
 	tms_chain_index = 0;
-	if (usbprog_jtag_handle == 0) {
+	if (!usbprog_jtag_handle) {
 		LOG_ERROR("Can't find USB JTAG Interface! Please check connection and permissions.");
 		return ERROR_JTAG_INIT_FAILED;
 	}
@@ -341,7 +341,7 @@ struct usbprog_jtag *usbprog_jtag_open(void)
 	const uint16_t pids[] = { PID, 0 };
 	struct libusb_device_handle *dev;
 
-	if (jtag_libusb_open(vids, pids, &dev, NULL) != ERROR_OK)
+	if (jtag_libusb_open(vids, pids, NULL, &dev, NULL) != ERROR_OK)
 		return NULL;
 
 	struct usbprog_jtag *tmp = malloc(sizeof(struct usbprog_jtag));

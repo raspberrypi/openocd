@@ -50,7 +50,7 @@ static int jtag_libusb_error(int err)
 	}
 }
 
-static bool jtag_libusb_match_ids(struct libusb_device_descriptor *dev_desc,
+bool jtag_libusb_match_ids(struct libusb_device_descriptor *dev_desc,
 		const uint16_t vids[], const uint16_t pids[])
 {
 	for (unsigned i = 0; vids[i]; i++) {
@@ -146,12 +146,13 @@ static bool jtag_libusb_match_serial(struct libusb_device_handle *device,
 }
 
 int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
-		struct libusb_device_handle **out,
+		const char *product, struct libusb_device_handle **out,
 		adapter_get_alternate_serial_fn adapter_get_alternate_serial)
 {
 	int cnt, idx, err_code;
 	int retval = ERROR_FAIL;
 	bool serial_mismatch = false;
+	bool product_mismatch = false;
 	struct libusb_device_handle *libusb_handle = NULL;
 	const char *serial = adapter_get_required_serial();
 
@@ -188,10 +189,18 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 			continue;
 		}
 
+		if (product &&
+				!string_descriptor_equal(libusb_handle, dev_desc.iProduct, product)) {
+			product_mismatch = true;
+			libusb_close(libusb_handle);
+			continue;
+		}
+
 		/* Success. */
 		*out = libusb_handle;
 		retval = ERROR_OK;
 		serial_mismatch = false;
+		product_mismatch = false;
 		break;
 	}
 	if (cnt >= 0)
@@ -199,6 +208,9 @@ int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
 
 	if (serial_mismatch)
 		LOG_INFO("No device matches the serial string");
+
+	if (product_mismatch)
+		LOG_INFO("No device matches the product string");
 
 	if (retval != ERROR_OK)
 		libusb_exit(jtag_libusb_context);
@@ -216,17 +228,22 @@ void jtag_libusb_close(struct libusb_device_handle *dev)
 
 int jtag_libusb_control_transfer(struct libusb_device_handle *dev, uint8_t request_type,
 		uint8_t request, uint16_t value, uint16_t index, char *bytes,
-		uint16_t size, unsigned int timeout)
+		uint16_t size, unsigned int timeout, int *transferred)
 {
-	int transferred = 0;
-
-	transferred = libusb_control_transfer(dev, request_type, request, value, index,
+	int retval = libusb_control_transfer(dev, request_type, request, value, index,
 				(unsigned char *)bytes, size, timeout);
 
-	if (transferred < 0)
-		transferred = 0;
+	if (retval < 0) {
+		LOG_ERROR("libusb_control_transfer error: %s", libusb_error_name(retval));
+		if (transferred)
+			*transferred = 0;
+		return jtag_libusb_error(retval);
+	}
 
-	return transferred;
+	if (transferred)
+		*transferred = retval;
+
+	return ERROR_OK;
 }
 
 int jtag_libusb_bulk_write(struct libusb_device_handle *dev, int ep, char *bytes,
@@ -359,4 +376,60 @@ int jtag_libusb_get_pid(struct libusb_device *dev, uint16_t *pid)
 int jtag_libusb_handle_events_completed(int *completed)
 {
 	return libusb_handle_events_completed(jtag_libusb_context, completed);
+}
+
+static enum {
+	DEV_MEM_NOT_YET_DECIDED,
+	DEV_MEM_AVAILABLE,
+	DEV_MEM_FALLBACK_MALLOC
+} dev_mem_allocation;
+
+/* Older libusb does not implement following API calls - define stubs instead */
+#if !defined(LIBUSB_API_VERSION) || (LIBUSB_API_VERSION < 0x01000105)
+static uint8_t *libusb_dev_mem_alloc(libusb_device_handle *devh, size_t length)
+{
+	return NULL;
+}
+
+static int libusb_dev_mem_free(libusb_device_handle *devh,
+							   uint8_t *buffer, size_t length)
+{
+	return LIBUSB_ERROR_NOT_SUPPORTED;
+}
+#endif
+
+uint8_t *oocd_libusb_dev_mem_alloc(libusb_device_handle *devh,
+			size_t length)
+{
+	uint8_t *buffer = NULL;
+	if (dev_mem_allocation != DEV_MEM_FALLBACK_MALLOC)
+		buffer = libusb_dev_mem_alloc(devh, length);
+
+	if (dev_mem_allocation == DEV_MEM_NOT_YET_DECIDED)
+		dev_mem_allocation = buffer ? DEV_MEM_AVAILABLE : DEV_MEM_FALLBACK_MALLOC;
+
+	if (dev_mem_allocation == DEV_MEM_FALLBACK_MALLOC)
+		buffer = malloc(length);
+
+	return buffer;
+}
+
+int oocd_libusb_dev_mem_free(libusb_device_handle *devh,
+		uint8_t *buffer, size_t length)
+{
+	if (!buffer)
+		return ERROR_OK;
+
+	switch (dev_mem_allocation) {
+	case DEV_MEM_AVAILABLE:
+		return jtag_libusb_error(libusb_dev_mem_free(devh, buffer, length));
+
+	case DEV_MEM_FALLBACK_MALLOC:
+		free(buffer);
+		return ERROR_OK;
+
+	case DEV_MEM_NOT_YET_DECIDED:
+		return ERROR_FAIL;
+	}
+	return ERROR_FAIL;
 }

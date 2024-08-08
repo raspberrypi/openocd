@@ -12,6 +12,7 @@
 #include <jtag/jtag.h>
 #include <flash/nor/spi.h>
 #include <helper/time_support.h>
+#include <pld/pld.h>
 
 #define JTAGSPI_MAX_TIMEOUT 3000
 
@@ -21,19 +22,44 @@ struct jtagspi_flash_bank {
 	struct flash_device dev;
 	char devname[32];
 	bool probed;
-	bool always_4byte;			/* use always 4-byte address except for basic read 0x03 */
-	uint32_t ir;
-	unsigned int addr_len;		/* address length in bytes */
+	bool always_4byte;             /* use always 4-byte address except for basic read 0x03 */
+	unsigned int addr_len;         /* address length in bytes */
+	struct pld_device *pld_device; /* if not NULL, the PLD has special instructions for JTAGSPI */
+	uint32_t ir;                   /* when !pld_device, this instruction code is used in
+									  jtagspi_set_user_ir to connect through a proxy bitstream */
 };
 
 FLASH_BANK_COMMAND_HANDLER(jtagspi_flash_bank_command)
 {
-	struct jtagspi_flash_bank *info;
-
 	if (CMD_ARGC < 7)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	info = malloc(sizeof(struct jtagspi_flash_bank));
+	unsigned int ir = 0;
+	struct pld_device *device = NULL;
+	if (strcmp(CMD_ARGV[6], "-pld") == 0) {
+		if (CMD_ARGC < 8)
+			return ERROR_COMMAND_SYNTAX_ERROR;
+		device = get_pld_device_by_name_or_numstr(CMD_ARGV[7]);
+		if (device) {
+			bool has_jtagspi_instruction = false;
+			int retval = pld_has_jtagspi_instruction(device, &has_jtagspi_instruction);
+			if (retval != ERROR_OK)
+				return retval;
+			if (!has_jtagspi_instruction) {
+				retval = pld_get_jtagspi_userircode(device, &ir);
+				if (retval != ERROR_OK)
+					return retval;
+				device = NULL;
+			}
+		} else {
+			LOG_ERROR("pld device '#%s' is out of bounds or unknown", CMD_ARGV[7]);
+			return ERROR_FAIL;
+		}
+	} else {
+		COMMAND_PARSE_NUMBER(uint, CMD_ARGV[6], ir);
+	}
+
+	struct jtagspi_flash_bank *info = calloc(1, sizeof(struct jtagspi_flash_bank));
 	if (!info) {
 		LOG_ERROR("no memory for flash bank info");
 		return ERROR_FAIL;
@@ -41,20 +67,25 @@ FLASH_BANK_COMMAND_HANDLER(jtagspi_flash_bank_command)
 	bank->sectors = NULL;
 	bank->driver_priv = info;
 
-	info->tap = NULL;
+	if (!bank->target->tap) {
+		LOG_ERROR("Target has no JTAG tap");
+		return ERROR_FAIL;
+	}
+	info->tap = bank->target->tap;
 	info->probed = false;
-	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[6], info->ir);
+
+	info->ir = ir;
+	info->pld_device = device;
 
 	return ERROR_OK;
 }
 
-static void jtagspi_set_ir(struct flash_bank *bank)
+static void jtagspi_set_user_ir(struct jtagspi_flash_bank *info)
 {
-	struct jtagspi_flash_bank *info = bank->driver_priv;
 	struct scan_field field;
 	uint8_t buf[4] = { 0 };
 
-	LOG_DEBUG("loading jtagspi ir");
+	LOG_DEBUG("loading jtagspi ir(0x%" PRIx32 ")", info->ir);
 	buf_set_u32(buf, 0, info->tap->ir_length, info->ir);
 	field.num_bits = info->tap->ir_length;
 	field.out_value = buf;
@@ -75,6 +106,7 @@ static int jtagspi_cmd(struct flash_bank *bank, uint8_t cmd,
 	assert(data_buffer || data_len == 0);
 
 	struct scan_field fields[6];
+	struct jtagspi_flash_bank *info = bank->driver_priv;
 
 	LOG_DEBUG("cmd=0x%02x write_len=%d data_len=%d", cmd, write_len, data_len);
 
@@ -83,22 +115,34 @@ static int jtagspi_cmd(struct flash_bank *bank, uint8_t cmd,
 	if (is_read)
 		data_len = -data_len;
 
+	unsigned int facing_read_bits = 0;
+	unsigned int trailing_write_bits = 0;
+
+	if (info->pld_device) {
+		int retval = pld_get_jtagspi_stuff_bits(info->pld_device, &facing_read_bits, &trailing_write_bits);
+		if (retval != ERROR_OK)
+			return retval;
+	}
+
 	int n = 0;
 	const uint8_t marker = 1;
-	fields[n].num_bits = 1;
-	fields[n].out_value = &marker;
-	fields[n].in_value = NULL;
-	n++;
-
-	/* transfer length = cmd + address + read/write,
-	 * -1 due to the counter implementation */
 	uint8_t xfer_bits[4];
-	h_u32_to_be(xfer_bits, ((sizeof(cmd) + write_len + data_len) * CHAR_BIT) - 1);
-	flip_u8(xfer_bits, xfer_bits, sizeof(xfer_bits));
-	fields[n].num_bits = sizeof(xfer_bits) * CHAR_BIT;
-	fields[n].out_value = xfer_bits;
-	fields[n].in_value = NULL;
-	n++;
+	if (!info->pld_device) { /* mode == JTAGSPI_MODE_PROXY_BITSTREAM */
+		facing_read_bits = jtag_tap_count_enabled();
+		fields[n].num_bits = 1;
+		fields[n].out_value = &marker;
+		fields[n].in_value = NULL;
+		n++;
+
+		/* transfer length = cmd + address + read/write,
+		 * -1 due to the counter implementation */
+		h_u32_to_be(xfer_bits, ((sizeof(cmd) + write_len + data_len) * CHAR_BIT) - 1);
+		flip_u8(xfer_bits, xfer_bits, sizeof(xfer_bits));
+		fields[n].num_bits = sizeof(xfer_bits) * CHAR_BIT;
+		fields[n].out_value = xfer_bits;
+		fields[n].in_value = NULL;
+		n++;
+	}
 
 	flip_u8(&cmd, &cmd, sizeof(cmd));
 	fields[n].num_bits = sizeof(cmd) * CHAR_BIT;
@@ -116,10 +160,12 @@ static int jtagspi_cmd(struct flash_bank *bank, uint8_t cmd,
 
 	if (data_len > 0) {
 		if (is_read) {
-			fields[n].num_bits = jtag_tap_count_enabled();
-			fields[n].out_value = NULL;
-			fields[n].in_value = NULL;
-			n++;
+			if (facing_read_bits) {
+				fields[n].num_bits = facing_read_bits;
+				fields[n].out_value = NULL;
+				fields[n].in_value = NULL;
+				n++;
+			}
 
 			fields[n].out_value = NULL;
 			fields[n].in_value = data_buffer;
@@ -131,16 +177,33 @@ static int jtagspi_cmd(struct flash_bank *bank, uint8_t cmd,
 		fields[n].num_bits = data_len * CHAR_BIT;
 		n++;
 	}
+	if (!is_read && trailing_write_bits) {
+		fields[n].num_bits = trailing_write_bits;
+		fields[n].out_value = NULL;
+		fields[n].in_value = NULL;
+		n++;
+	}
 
-	jtagspi_set_ir(bank);
+	if (info->pld_device) {
+		int retval = pld_connect_spi_to_jtag(info->pld_device);
+		if (retval != ERROR_OK)
+			return retval;
+	} else {
+		jtagspi_set_user_ir(info);
+	}
+
 	/* passing from an IR scan to SHIFT-DR clears BYPASS registers */
-	struct jtagspi_flash_bank *info = bank->driver_priv;
 	jtag_add_dr_scan(info->tap, n, fields, TAP_IDLE);
 	int retval = jtag_execute_queue();
+	if (retval != ERROR_OK)
+		return retval;
 
 	if (is_read)
 		flip_u8(data_buffer, data_buffer, data_len);
-	return retval;
+
+	if (info->pld_device)
+		return pld_disconnect_spi_from_jtag(info->pld_device);
+	return ERROR_OK;
 }
 
 COMMAND_HANDLER(jtagspi_handle_set)
@@ -161,7 +224,12 @@ COMMAND_HANDLER(jtagspi_handle_set)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
-	retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
+	/* calling flash_command_get_bank without probing because handle_set is used
+	   to set device parameters if not autodetected. So probing would fail
+	   anyhow.
+	*/
+	retval = CALL_COMMAND_HANDLER(flash_command_get_bank_probe_optional, 0,
+		&bank, false);
 	if (ERROR_OK != retval)
 		return retval;
 	info = bank->driver_priv;
@@ -292,52 +360,50 @@ COMMAND_HANDLER(jtagspi_handle_set)
 COMMAND_HANDLER(jtagspi_handle_cmd)
 {
 	struct flash_bank *bank;
-	unsigned int index = 1;
-	const int max = 21;
-	uint8_t num_write, num_read, write_buffer[max], read_buffer[1 << CHAR_BIT];
-	uint8_t data, *ptr;
-	char temp[4], output[(2 + max + (1 << CHAR_BIT)) * 3 + 8];
-	int retval;
+	const unsigned int max = 20;
+	uint8_t cmd_byte, num_read, write_buffer[max], read_buffer[1 << CHAR_BIT];
 
 	LOG_DEBUG("%s", __func__);
 
-	if (CMD_ARGC < 3) {
-		command_print(CMD, "jtagspi: not enough arguments");
+	if (CMD_ARGC < 3)
 		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
 
-	num_write = CMD_ARGC - 2;
+	uint8_t num_write = CMD_ARGC - 3;
 	if (num_write > max) {
-		LOG_ERROR("at most %d bytes may be send", max);
-		return ERROR_COMMAND_SYNTAX_ERROR;
+		command_print(CMD, "at most %d bytes may be send", max);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
-	if (ERROR_OK != retval)
-		return retval;
-
-	COMMAND_PARSE_NUMBER(u8, CMD_ARGV[index++], num_read);
-
-	snprintf(output, sizeof(output), "spi: ");
-	for (ptr = &write_buffer[0] ; index < CMD_ARGC; index++) {
-		COMMAND_PARSE_NUMBER(u8, CMD_ARGV[index], data);
-		*ptr++ = data;
-		snprintf(temp, sizeof(temp), "%02" PRIx8 " ", data);
-		strncat(output, temp, sizeof(output) - strlen(output) - 1);
-	}
-	strncat(output, "-> ", sizeof(output) - strlen(output) - 1);
-
-	/* process command */
-	ptr = &read_buffer[0];
-	jtagspi_cmd(bank, write_buffer[0], &write_buffer[1], num_write - 1, ptr, -num_read);
+	/* calling flash_command_get_bank without probing because we like to be
+	   able to send commands before auto-probing occurred. For example sending
+	   "release from power down" is needed before probing when flash is in
+	   power down mode.
+	 */
+	int retval = CALL_COMMAND_HANDLER(flash_command_get_bank_probe_optional, 0,
+								&bank, false);
 	if (retval != ERROR_OK)
 		return retval;
 
-	for ( ; num_read > 0; num_read--) {
-		snprintf(temp, sizeof(temp), "%02" PRIx8 " ", *ptr++);
-		strncat(output, temp, sizeof(output) - strlen(output) - 1);
-	}
-	command_print(CMD, "%s", output);
+	COMMAND_PARSE_NUMBER(u8, CMD_ARGV[1], num_read);
+	COMMAND_PARSE_NUMBER(u8, CMD_ARGV[2], cmd_byte);
+
+	for (unsigned int i = 0; i < num_write; i++)
+		COMMAND_PARSE_NUMBER(u8, CMD_ARGV[i + 3], write_buffer[i]);
+
+	/* process command */
+	retval = jtagspi_cmd(bank, cmd_byte, write_buffer, num_write, read_buffer, -num_read);
+	if (retval != ERROR_OK)
+		return retval;
+
+	command_print_sameline(CMD, "spi: %02" PRIx8, cmd_byte);
+
+	for (unsigned int i = 0; i < num_write; i++)
+		command_print_sameline(CMD, " %02" PRIx8, write_buffer[i]);
+
+	command_print_sameline(CMD, " ->");
+
+	for (unsigned int i = 0; i < num_read; i++)
+		command_print_sameline(CMD, " %02" PRIx8, read_buffer[i]);
 
 	return ERROR_OK;
 }
@@ -380,12 +446,6 @@ static int jtagspi_probe(struct flash_bank *bank)
 		bank->sectors = NULL;
 	}
 	info->probed = false;
-
-	if (!bank->target->tap) {
-		LOG_ERROR("Target has no JTAG tap");
-		return ERROR_FAIL;
-	}
-	info->tap = bank->target->tap;
 
 	jtagspi_cmd(bank, SPIFLASH_READ_ID, NULL, 0, in_buf, -3);
 	/* the table in spi.c has the manufacturer byte (first) as the lsb */
@@ -518,7 +578,7 @@ static int jtagspi_bulk_erase(struct flash_bank *bank)
 	if (retval != ERROR_OK)
 		return retval;
 
-	jtagspi_cmd(bank, info->dev.chip_erase_cmd, NULL, 0, NULL, 0);
+	retval = jtagspi_cmd(bank, info->dev.chip_erase_cmd, NULL, 0, NULL, 0);
 	if (retval != ERROR_OK)
 		return retval;
 

@@ -29,6 +29,7 @@
 #include "arm_opcodes.h"
 #include "arm_semihosting.h"
 #include "smp.h"
+#include <helper/nvp.h>
 #include <helper/time_support.h>
 #include <rtt/rtt.h>
 
@@ -49,64 +50,86 @@
 /* Supported Cortex-M Cores */
 static const struct cortex_m_part_info cortex_m_parts[] = {
 	{
-		.partno = CORTEX_M0_PARTNO,
+		.impl_part = CORTEX_M0_PARTNO,
 		.name = "Cortex-M0",
 		.arch = ARM_ARCH_V6M,
 	},
 	{
-		.partno = CORTEX_M0P_PARTNO,
+		.impl_part = CORTEX_M0P_PARTNO,
 		.name = "Cortex-M0+",
 		.arch = ARM_ARCH_V6M,
 	},
 	{
-		.partno = CORTEX_M1_PARTNO,
+		.impl_part = CORTEX_M1_PARTNO,
 		.name = "Cortex-M1",
 		.arch = ARM_ARCH_V6M,
 	},
 	{
-		.partno = CORTEX_M3_PARTNO,
+		.impl_part = CORTEX_M3_PARTNO,
 		.name = "Cortex-M3",
 		.arch = ARM_ARCH_V7M,
 		.flags = CORTEX_M_F_TAR_AUTOINCR_BLOCK_4K,
 	},
 	{
-		.partno = CORTEX_M4_PARTNO,
+		.impl_part = CORTEX_M4_PARTNO,
 		.name = "Cortex-M4",
 		.arch = ARM_ARCH_V7M,
 		.flags = CORTEX_M_F_HAS_FPV4 | CORTEX_M_F_TAR_AUTOINCR_BLOCK_4K,
 	},
 	{
-		.partno = CORTEX_M7_PARTNO,
+		.impl_part = CORTEX_M7_PARTNO,
 		.name = "Cortex-M7",
 		.arch = ARM_ARCH_V7M,
 		.flags = CORTEX_M_F_HAS_FPV5,
 	},
 	{
-		.partno = CORTEX_M23_PARTNO,
+		.impl_part = CORTEX_M23_PARTNO,
 		.name = "Cortex-M23",
 		.arch = ARM_ARCH_V8M,
 	},
 	{
-		.partno = CORTEX_M33_PARTNO,
+		.impl_part = CORTEX_M33_PARTNO,
 		.name = "Cortex-M33",
 		.arch = ARM_ARCH_V8M,
 		.flags = CORTEX_M_F_HAS_FPV5,
 	},
 	{
-		.partno = CORTEX_M35P_PARTNO,
+		.impl_part = CORTEX_M35P_PARTNO,
 		.name = "Cortex-M35P",
 		.arch = ARM_ARCH_V8M,
 		.flags = CORTEX_M_F_HAS_FPV5,
 	},
 	{
-		.partno = CORTEX_M55_PARTNO,
+		.impl_part = CORTEX_M55_PARTNO,
 		.name = "Cortex-M55",
 		.arch = ARM_ARCH_V8M,
 		.flags = CORTEX_M_F_HAS_FPV5,
 	},
 	{
-		.partno = STAR_MC1_PARTNO,
+		.impl_part = CORTEX_M85_PARTNO,
+		.name = "Cortex-M85",
+		.arch = ARM_ARCH_V8M,
+		.flags = CORTEX_M_F_HAS_FPV5,
+	},
+	{
+		.impl_part = STAR_MC1_PARTNO,
 		.name = "STAR-MC1",
+		.arch = ARM_ARCH_V8M,
+		.flags = CORTEX_M_F_HAS_FPV5,
+	},
+	{
+		.impl_part = INFINEON_SLX2_PARTNO,
+		.name = "Infineon-SLx2",
+		.arch = ARM_ARCH_V8M,
+	},
+	{
+		.impl_part = REALTEK_M200_PARTNO,
+		.name = "Real-M200 (KM0)",
+		.arch = ARM_ARCH_V8M,
+	},
+	{
+		.impl_part = REALTEK_M300_PARTNO,
+		.name = "Real-M300 (KM4)",
 		.arch = ARM_ARCH_V8M,
 		.flags = CORTEX_M_F_HAS_FPV5,
 	},
@@ -800,15 +823,11 @@ static int cortex_m_debug_entry(struct target *target)
 		return retval;
 
 	/* examine PE security state */
-	bool secure_state = false;
+	uint32_t dscsr = 0;
 	if (armv7m->arm.arch == ARM_ARCH_V8M) {
-		uint32_t dscsr;
-
 		retval = mem_ap_read_u32(armv7m->debug_ap, DCB_DSCSR, &dscsr);
 		if (retval != ERROR_OK)
 			return retval;
-
-		secure_state = (dscsr & DSCSR_CDS) == DSCSR_CDS;
 	}
 
 	/* Load all registers to arm.core_cache */
@@ -856,6 +875,7 @@ static int cortex_m_debug_entry(struct target *target)
 	if (armv7m->exception_number)
 		cortex_m_examine_exception_reason(target);
 
+	bool secure_state = (dscsr & DSCSR_CDS) == DSCSR_CDS;
 	LOG_TARGET_DEBUG(target, "entered debug state in core mode: %s at PC 0x%" PRIx32
 			", cpu in %s state, target->state: %s",
 		arm_mode_name(arm->core_mode),
@@ -1086,6 +1106,7 @@ static int cortex_m_poll(struct target *target)
 
 static int cortex_m_halt_one(struct target *target)
 {
+	int retval;
 	LOG_TARGET_DEBUG(target, "target->state: %s", target_state_name(target));
 
 	if (target->state == TARGET_HALTED) {
@@ -1096,22 +1117,8 @@ static int cortex_m_halt_one(struct target *target)
 	if (target->state == TARGET_UNKNOWN)
 		LOG_TARGET_WARNING(target, "target was in unknown state when halt was requested");
 
-	if (target->state == TARGET_RESET) {
-		if ((jtag_get_reset_config() & RESET_SRST_PULLS_TRST) && jtag_get_srst()) {
-			LOG_TARGET_ERROR(target, "can't request a halt while in reset if nSRST pulls nTRST");
-			return ERROR_TARGET_FAILURE;
-		} else {
-			/* we came here in a reset_halt or reset_init sequence
-			 * debug entry was already prepared in cortex_m3_assert_reset()
-			 */
-			target->debug_reason = DBG_REASON_DBGRQ;
-
-			return ERROR_OK;
-		}
-	}
-
 	/* Write to Debug Halting Control and Status Register */
-	cortex_m_write_debug_halt_mask(target, C_HALT, 0);
+	retval = cortex_m_write_debug_halt_mask(target, C_HALT, 0);
 
 	/* Do this really early to minimize the window where the MASKINTS erratum
 	 * can pile up pending interrupts. */
@@ -1119,7 +1126,7 @@ static int cortex_m_halt_one(struct target *target)
 
 	target->debug_reason = DBG_REASON_DBGRQ;
 
-	return ERROR_OK;
+	return retval;
 }
 
 static int cortex_m_halt(struct target *target)
@@ -1216,7 +1223,7 @@ static int cortex_m_restore_one(struct target *target, bool current,
 	struct reg *r;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_TARGET_ERROR(target, "target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1393,7 +1400,7 @@ static int cortex_m_step(struct target *target, int current,
 	bool isr_timed_out = false;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_TARGET_WARNING(target, "target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1600,12 +1607,13 @@ static int cortex_m_assert_reset(struct target *target)
 	}
 
 	/* some cores support connecting while srst is asserted
-	 * use that mode is it has been configured */
+	 * use that mode if it has been configured */
 
 	bool srst_asserted = false;
 
 	if ((jtag_reset_config & RESET_HAS_SRST) &&
-		((jtag_reset_config & RESET_SRST_NO_GATING) || !armv7m->debug_ap)) {
+		((jtag_reset_config & RESET_SRST_NO_GATING)
+		 || (!armv7m->debug_ap && !target->defer_examine))) {
 		/* If we have no debug_ap, asserting SRST is the only thing
 		 * we can do now */
 		adapter_assert_reset();
@@ -1685,9 +1693,8 @@ static int cortex_m_assert_reset(struct target *target)
 		/* srst is asserted, ignore AP access errors */
 		retval = ERROR_OK;
 	} else {
-		/* Use a standard Cortex-M3 software reset mechanism.
-		 * We default to using VECTRESET as it is supported on all current cores
-		 * (except Cortex-M0, M0+ and M1 which support SYSRESETREQ only!)
+		/* Use a standard Cortex-M software reset mechanism.
+		 * We default to using VECTRESET.
 		 * This has the disadvantage of not resetting the peripherals, so a
 		 * reset-init event handler is needed to perform any peripheral resets.
 		 */
@@ -1734,17 +1741,7 @@ static int cortex_m_assert_reset(struct target *target)
 
 	register_cache_invalidate(cortex_m->armv7m.arm.core_cache);
 
-	/* now return stored error code if any */
-	if (retval != ERROR_OK)
-		return retval;
-
-	if (target->reset_halt && target_was_examined(target)) {
-		retval = target_halt(target);
-		if (retval != ERROR_OK)
-			return retval;
-	}
-
-	return ERROR_OK;
+	return retval;
 }
 
 static int cortex_m_deassert_reset(struct target *target)
@@ -1950,7 +1947,8 @@ static int cortex_m_set_watchpoint(struct target *target, struct watchpoint *wat
 	target_write_u32(target, comparator->dwt_comparator_address + 0,
 		comparator->comp);
 
-	if ((cortex_m->dwt_devarch & 0x1FFFFF) != DWT_DEVARCH_ARMV8M) {
+	if ((cortex_m->dwt_devarch & 0x1FFFFF) != DWT_DEVARCH_ARMV8M_V2_0
+			&& (cortex_m->dwt_devarch & 0x1FFFFF) != DWT_DEVARCH_ARMV8M_V2_1) {
 		uint32_t mask = 0, temp;
 
 		/* watchpoint params were validated earlier */
@@ -2048,8 +2046,14 @@ int cortex_m_add_watchpoint(struct target *target, struct watchpoint *watchpoint
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
-	/* hardware doesn't support data value masking */
-	if (watchpoint->mask != ~(uint32_t)0) {
+	/* REVISIT This DWT may well be able to watch for specific data
+	 * values.  Requires comparator #1 to set DATAVMATCH and match
+	 * the data, and another comparator (DATAVADDR0) matching addr.
+	 *
+	 * NOTE: hardware doesn't support data value masking, so we'll need
+	 * to check that mask is zero
+	 */
+	if (watchpoint->mask != WATCHPOINT_IGNORE_DATA_VALUE_MASK) {
 		LOG_TARGET_DEBUG(target, "watchpoint value masks not supported");
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
@@ -2070,18 +2074,6 @@ int cortex_m_add_watchpoint(struct target *target, struct watchpoint *watchpoint
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
-	/* Caller doesn't seem to be able to describe watching for data
-	 * values of zero; that flags "no value".
-	 *
-	 * REVISIT This DWT may well be able to watch for specific data
-	 * values.  Requires comparator #1 to set DATAVMATCH and match
-	 * the data, and another comparator (DATAVADDR0) matching addr.
-	 */
-	if (watchpoint->value) {
-		LOG_TARGET_DEBUG(target, "data value watchpoint not YET supported");
-		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-	}
-
 	cortex_m->dwt_comp_available--;
 	LOG_TARGET_DEBUG(target, "dwt_comp_available: %d", cortex_m->dwt_comp_available);
 
@@ -2094,7 +2086,7 @@ int cortex_m_remove_watchpoint(struct target *target, struct watchpoint *watchpo
 
 	/* REVISIT why check? DWT can be updated with core running ... */
 	if (target->state != TARGET_HALTED) {
-		LOG_TARGET_WARNING(target, "target not halted");
+		LOG_TARGET_ERROR(target, "not halted");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -2471,16 +2463,17 @@ static bool cortex_m_has_tz(struct target *target)
 	return (dauthstatus & DAUTHSTATUS_SID_MASK) != 0;
 }
 
-#define MVFR0 0xe000ef40
-#define MVFR1 0xe000ef44
 
-#define MVFR0_DEFAULT_M4 0x10110021
-#define MVFR1_DEFAULT_M4 0x11000011
+#define MVFR0          0xE000EF40
+#define MVFR0_SP_MASK  0x000000F0
+#define MVFR0_SP       0x00000020
+#define MVFR0_DP_MASK  0x00000F00
+#define MVFR0_DP       0x00000200
 
-#define MVFR0_DEFAULT_M7_SP 0x10110021
-#define MVFR0_DEFAULT_M7_DP 0x10110221
-#define MVFR1_DEFAULT_M7_SP 0x11000011
-#define MVFR1_DEFAULT_M7_DP 0x12000011
+#define MVFR1          0xE000EF44
+#define MVFR1_MVE_MASK 0x00000F00
+#define MVFR1_MVE_I    0x00000100
+#define MVFR1_MVE_F    0x00000200
 
 static int cortex_m_find_mem_ap(struct adiv5_dap *swjdp,
 		struct adiv5_ap **debug_ap)
@@ -2494,7 +2487,7 @@ static int cortex_m_find_mem_ap(struct adiv5_dap *swjdp,
 int cortex_m_examine(struct target *target)
 {
 	int retval;
-	uint32_t cpuid, fpcr, mvfr0, mvfr1;
+	uint32_t cpuid, fpcr;
 	struct cortex_m_common *cortex_m = target_to_cm(target);
 	struct adiv5_dap *swjdp = cortex_m->armv7m.arm.dap;
 	struct armv7m_common *armv7m = target_to_armv7m(target);
@@ -2534,18 +2527,18 @@ int cortex_m_examine(struct target *target)
 		if (retval != ERROR_OK)
 			return retval;
 
-		/* Get ARCH and CPU types */
-		const enum cortex_m_partno core_partno = (cpuid & ARM_CPUID_PARTNO_MASK) >> ARM_CPUID_PARTNO_POS;
+		/* Inspect implementor/part to look for recognized cores  */
+		unsigned int impl_part = cpuid & (ARM_CPUID_IMPLEMENTOR_MASK | ARM_CPUID_PARTNO_MASK);
 
 		for (unsigned int n = 0; n < ARRAY_SIZE(cortex_m_parts); n++) {
-			if (core_partno == cortex_m_parts[n].partno) {
+			if (impl_part == cortex_m_parts[n].impl_part) {
 				cortex_m->core_info = &cortex_m_parts[n];
 				break;
 			}
 		}
 
 		if (!cortex_m->core_info) {
-			LOG_TARGET_ERROR(target, "Cortex-M PARTNO 0x%x is unrecognized", core_partno);
+			LOG_TARGET_ERROR(target, "Cortex-M CPUID: 0x%x is unrecognized", cpuid);
 			return ERROR_FAIL;
 		}
 
@@ -2557,7 +2550,7 @@ int cortex_m_examine(struct target *target)
 				(uint8_t)((cpuid >> 0) & 0xf));
 
 		cortex_m->maskints_erratum = false;
-		if (core_partno == CORTEX_M7_PARTNO) {
+		if (impl_part == CORTEX_M7_PARTNO) {
 			uint8_t rev, patch;
 			rev = (cpuid >> 20) & 0xf;
 			patch = (cpuid >> 0) & 0xf;
@@ -2569,25 +2562,37 @@ int cortex_m_examine(struct target *target)
 		LOG_TARGET_DEBUG(target, "cpuid: 0x%8.8" PRIx32 "", cpuid);
 
 		if (cortex_m->core_info->flags & CORTEX_M_F_HAS_FPV4) {
+			uint32_t mvfr0;
 			target_read_u32(target, MVFR0, &mvfr0);
-			target_read_u32(target, MVFR1, &mvfr1);
 
-			/* test for floating point feature on Cortex-M4 */
-			if ((mvfr0 == MVFR0_DEFAULT_M4) && (mvfr1 == MVFR1_DEFAULT_M4)) {
-				LOG_TARGET_DEBUG(target, "%s floating point feature FPv4_SP found", cortex_m->core_info->name);
+			if ((mvfr0 & MVFR0_SP_MASK) == MVFR0_SP) {
+				LOG_TARGET_DEBUG(target, "%s floating point feature FPv4_SP found",
+						cortex_m->core_info->name);
 				armv7m->fp_feature = FPV4_SP;
 			}
 		} else if (cortex_m->core_info->flags & CORTEX_M_F_HAS_FPV5) {
+			uint32_t mvfr0, mvfr1;
 			target_read_u32(target, MVFR0, &mvfr0);
 			target_read_u32(target, MVFR1, &mvfr1);
 
-			/* test for floating point features on Cortex-M7 */
-			if ((mvfr0 == MVFR0_DEFAULT_M7_SP) && (mvfr1 == MVFR1_DEFAULT_M7_SP)) {
-				LOG_TARGET_DEBUG(target, "%s floating point feature FPv5_SP found", cortex_m->core_info->name);
+			if ((mvfr0 & MVFR0_DP_MASK) == MVFR0_DP) {
+				if ((mvfr1 & MVFR1_MVE_MASK) == MVFR1_MVE_F) {
+					LOG_TARGET_DEBUG(target, "%s floating point feature FPv5_DP + MVE-F found",
+							cortex_m->core_info->name);
+					armv7m->fp_feature = FPV5_MVE_F;
+				} else {
+					LOG_TARGET_DEBUG(target, "%s floating point feature FPv5_DP found",
+							cortex_m->core_info->name);
+					armv7m->fp_feature = FPV5_DP;
+				}
+			} else if ((mvfr0 & MVFR0_SP_MASK) == MVFR0_SP) {
+				LOG_TARGET_DEBUG(target, "%s floating point feature FPv5_SP found",
+						cortex_m->core_info->name);
 				armv7m->fp_feature = FPV5_SP;
-			} else if ((mvfr0 == MVFR0_DEFAULT_M7_DP) && (mvfr1 == MVFR1_DEFAULT_M7_DP)) {
-				LOG_TARGET_DEBUG(target, "%s floating point feature FPv5_DP found", cortex_m->core_info->name);
-				armv7m->fp_feature = FPV5_DP;
+			} else if ((mvfr1 & MVFR1_MVE_MASK) == MVFR1_MVE_I) {
+				LOG_TARGET_DEBUG(target, "%s floating point feature MVE-I found",
+						cortex_m->core_info->name);
+				armv7m->fp_feature = FPV5_MVE_I;
 			}
 		}
 
@@ -2779,7 +2784,7 @@ static int cortex_m_init_arch_info(struct target *target,
 	armv7m_init_arch_info(target, armv7m);
 
 	/* default reset mode is to use srst if fitted
-	 * if not it will use CORTEX_M3_RESET_VECTRESET */
+	 * if not it will use CORTEX_M_RESET_VECTRESET */
 	cortex_m->soft_reset_config = CORTEX_M_RESET_VECTRESET;
 
 	armv7m->arm.dap = dap;
@@ -2836,8 +2841,7 @@ static int cortex_m_verify_pointer(struct command_invocation *cmd,
 
 /*
  * Only stuff below this line should need to verify that its target
- * is a Cortex-M3.  Everything else should have indirected through the
- * cortexm3_target structure, which is only used with CM3 targets.
+ * is a Cortex-M with available DAP access (not a HLA adapter).
  */
 
 COMMAND_HANDLER(handle_cortex_m_vector_catch_command)
@@ -2896,7 +2900,7 @@ COMMAND_HANDLER(handle_cortex_m_vector_catch_command)
 				break;
 			}
 			if (i == ARRAY_SIZE(vec_ids)) {
-				LOG_TARGET_ERROR(target, "No CM3 vector '%s'", CMD_ARGV[CMD_ARGC]);
+				LOG_TARGET_ERROR(target, "No Cortex-M vector '%s'", CMD_ARGV[CMD_ARGC]);
 				return ERROR_COMMAND_SYNTAX_ERROR;
 			}
 		}
@@ -2935,14 +2939,14 @@ COMMAND_HANDLER(handle_cortex_m_mask_interrupts_command)
 	struct cortex_m_common *cortex_m = target_to_cm(target);
 	int retval;
 
-	static const struct jim_nvp nvp_maskisr_modes[] = {
+	static const struct nvp nvp_maskisr_modes[] = {
 		{ .name = "auto", .value = CORTEX_M_ISRMASK_AUTO },
 		{ .name = "off", .value = CORTEX_M_ISRMASK_OFF },
 		{ .name = "on", .value = CORTEX_M_ISRMASK_ON },
 		{ .name = "steponly", .value = CORTEX_M_ISRMASK_STEPONLY },
 		{ .name = NULL, .value = -1 },
 	};
-	const struct jim_nvp *n;
+	const struct nvp *n;
 
 
 	retval = cortex_m_verify_pointer(CMD, cortex_m);
@@ -2950,19 +2954,19 @@ COMMAND_HANDLER(handle_cortex_m_mask_interrupts_command)
 		return retval;
 
 	if (target->state != TARGET_HALTED) {
-		command_print(CMD, "target must be stopped for \"%s\" command", CMD_NAME);
-		return ERROR_OK;
+		command_print(CMD, "Error: target must be stopped for \"%s\" command", CMD_NAME);
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if (CMD_ARGC > 0) {
-		n = jim_nvp_name2value_simple(nvp_maskisr_modes, CMD_ARGV[0]);
+		n = nvp_name2value(nvp_maskisr_modes, CMD_ARGV[0]);
 		if (!n->name)
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		cortex_m->isrmasking_mode = n->value;
 		cortex_m_set_maskints_for_halt(target);
 	}
 
-	n = jim_nvp_value2name_simple(nvp_maskisr_modes, cortex_m->isrmasking_mode);
+	n = nvp_value2name(nvp_maskisr_modes, cortex_m->isrmasking_mode);
 	command_print(CMD, "cortex_m interrupt mask %s", n->name);
 
 	return ERROR_OK;

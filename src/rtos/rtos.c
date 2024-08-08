@@ -15,22 +15,7 @@
 #include "helper/binarybuffer.h"
 #include "server/gdb_server.h"
 
-/* RTOSs */
-extern struct rtos_type freertos_rtos;
-extern struct rtos_type threadx_rtos;
-extern struct rtos_type ecos_rtos;
-extern struct rtos_type linux_rtos;
-extern struct rtos_type chibios_rtos;
-extern struct rtos_type chromium_ec_rtos;
-extern struct rtos_type embkernel_rtos;
-extern struct rtos_type mqx_rtos;
-extern struct rtos_type ucos_iii_rtos;
-extern struct rtos_type nuttx_rtos;
-extern struct rtos_type hwthread_rtos;
-extern struct rtos_type riot_rtos;
-extern struct rtos_type zephyr_rtos;
-
-static struct rtos_type *rtos_types[] = {
+static const struct rtos_type *rtos_types[] = {
 	&threadx_rtos,
 	&freertos_rtos,
 	&ecos_rtos,
@@ -43,14 +28,13 @@ static struct rtos_type *rtos_types[] = {
 	&nuttx_rtos,
 	&riot_rtos,
 	&zephyr_rtos,
+	&rtkernel_rtos,
 	/* keep this as last, as it always matches with rtos auto */
 	&hwthread_rtos,
 	NULL
 };
 
 static int rtos_try_next(struct target *target);
-
-int rtos_thread_packet(struct connection *connection, const char *packet, int packet_size);
 
 int rtos_smp_init(struct target *target)
 {
@@ -68,7 +52,7 @@ static int rtos_target_for_threadid(struct connection *connection, int64_t threa
 	return ERROR_OK;
 }
 
-static int os_alloc(struct target *target, struct rtos_type *ostype)
+static int os_alloc(struct target *target, const struct rtos_type *ostype)
 {
 	struct rtos *os = target->rtos = calloc(1, sizeof(struct rtos));
 
@@ -94,11 +78,12 @@ static void os_free(struct target *target)
 		return;
 
 	free(target->rtos->symbols);
+	rtos_free_threadlist(target->rtos);
 	free(target->rtos);
 	target->rtos = NULL;
 }
 
-static int os_alloc_create(struct target *target, struct rtos_type *ostype)
+static int os_alloc_create(struct target *target, const struct rtos_type *ostype)
 {
 	int ret = os_alloc(target, ostype);
 
@@ -632,7 +617,10 @@ int rtos_generic_stack_read(struct target *target,
 
 	if (stacking->stack_growth_direction == 1)
 		address -= stacking->stack_registers_size;
-	retval = target_read_buffer(target, address, stacking->stack_registers_size, stack_data);
+	if (stacking->read_stack)
+		retval = stacking->read_stack(target, address, stacking, stack_data);
+	else
+		retval = target_read_buffer(target, address, stacking->stack_registers_size, stack_data);
 	if (retval != ERROR_OK) {
 		free(stack_data);
 		LOG_ERROR("Error reading stack frame from thread");
@@ -678,7 +666,7 @@ int rtos_generic_stack_read(struct target *target,
 static int rtos_try_next(struct target *target)
 {
 	struct rtos *os = target->rtos;
-	struct rtos_type **type = rtos_types;
+	const struct rtos_type **type = rtos_types;
 
 	if (!os)
 		return 0;

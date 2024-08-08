@@ -45,6 +45,8 @@ struct gdb_fileio_info;
  * not sure how this is used with all the recent changes)
  * TARGET_DEBUG_RUNNING = 4: the target is running, but it is executing code on
  * behalf of the debugger (e.g. algorithm for flashing)
+ * TARGET_UNAVAILABLE = 5: The target is unavailable for some reason. It might
+ * be powered down, for instance.
  *
  * also see: target_state_name();
  */
@@ -55,11 +57,7 @@ enum target_state {
 	TARGET_HALTED = 2,
 	TARGET_RESET = 3,
 	TARGET_DEBUG_RUNNING = 4,
-};
-
-enum nvp_assert {
-	NVP_DEASSERT,
-	NVP_ASSERT,
+	TARGET_UNAVAILABLE = 5
 };
 
 enum target_reset_mode {
@@ -120,7 +118,6 @@ enum target_register_class {
 struct target {
 	struct target_type *type;			/* target type definition (name, access functions) */
 	char *cmd_name;				/* tcl Name of target */
-	int target_number;					/* DO NOT USE!  field to be removed in 2010 */
 	struct jtag_tap *tap;				/* where on the jtag chain is this */
 	int32_t coreid;						/* which device on the TAP? */
 
@@ -154,7 +151,7 @@ struct target {
 	bool working_area_phys_spec;		/* physical address specified? */
 	target_addr_t working_area_phys;			/* physical address */
 	uint32_t working_area_size;			/* size in bytes */
-	uint32_t backup_working_area;		/* whether the content of the working area has to be preserved */
+	bool backup_working_area;			/* whether the content of the working area has to be preserved */
 	struct working_area *working_areas;/* list of allocated working areas */
 	enum target_debug_reason debug_reason;/* reason why the target entered debug state */
 	enum target_endianness endianness;	/* target endianness */
@@ -228,19 +225,19 @@ struct gdb_fileio_info {
 };
 
 /** Returns a description of the endianness for the specified target. */
-static inline const char *target_endianness(struct target *target)
+static inline const char *target_endianness(const struct target *target)
 {
 	return (target->endianness == TARGET_ENDIAN_UNKNOWN) ? "unknown" :
 			(target->endianness == TARGET_BIG_ENDIAN) ? "big endian" : "little endian";
 }
 
 /** Returns the instance-specific name of the specified target. */
-static inline const char *target_name(struct target *target)
+static inline const char *target_name(const struct target *target)
 {
 	return target->cmd_name;
 }
 
-const char *debug_reason_name(struct target *t);
+const char *debug_reason_name(const struct target *t);
 
 enum target_event {
 
@@ -307,7 +304,7 @@ struct target_event_action {
 	struct target_event_action *next;
 };
 
-bool target_has_event_action(struct target *target, enum target_event event);
+bool target_has_event_action(const struct target *target, enum target_event event);
 
 struct target_event_callback {
 	int (*callback)(struct target *target, enum target_event event, void *priv);
@@ -417,7 +414,6 @@ int target_call_timer_callbacks_now(void);
  */
 int64_t target_timer_next_event(void);
 
-struct target *get_target_by_num(int num);
 struct target *get_current_target(struct command_context *cmd_ctx);
 struct target *get_current_target_or_null(struct command_context *cmd_ctx);
 struct target *get_target(const char *id);
@@ -428,7 +424,7 @@ struct target *get_target(const char *id);
  * This routine is a wrapper for the target->type->name field.
  * Note that this is not an instance-specific name for his target.
  */
-const char *target_type_name(struct target *target);
+const char *target_type_name(const struct target *target);
 
 /**
  * Examine the specified @a target, letting it perform any
@@ -439,7 +435,7 @@ const char *target_type_name(struct target *target);
 int target_examine_one(struct target *target);
 
 /** @returns @c true if target_set_examined() has been called. */
-static inline bool target_was_examined(struct target *target)
+static inline bool target_was_examined(const struct target *target)
 {
 	return target->examined;
 }
@@ -508,7 +504,7 @@ int target_hit_watchpoint(struct target *target,
  *
  * This routine is a wrapper for target->type->get_gdb_arch.
  */
-const char *target_get_gdb_arch(struct target *target);
+const char *target_get_gdb_arch(const struct target *target);
 
 /**
  * Obtain the registers for GDB.
@@ -534,7 +530,7 @@ int target_get_gdb_reg_list_noread(struct target *target,
  *
  * Some target do not implement the necessary code required by GDB.
  */
-bool target_supports_gdb_connection(struct target *target);
+bool target_supports_gdb_connection(const struct target *target);
 
 /**
  * Step the target.
@@ -552,7 +548,7 @@ int target_run_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_param,
 		target_addr_t entry_point, target_addr_t exit_point,
-		int timeout_ms, void *arch_info);
+		unsigned int timeout_ms, void *arch_info);
 
 /**
  * Starts an algorithm in the background on the @a target given.
@@ -573,7 +569,7 @@ int target_start_algorithm(struct target *target,
 int target_wait_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
-		target_addr_t exit_point, int timeout_ms,
+		target_addr_t exit_point, unsigned int timeout_ms,
 		void *arch_info);
 
 /**
@@ -665,7 +661,7 @@ int target_checksum_memory(struct target *target,
 int target_blank_check_memory(struct target *target,
 		struct target_memory_check_block *blocks, int num_blocks,
 		uint8_t erased_value);
-int target_wait_state(struct target *target, enum target_state state, int ms);
+int target_wait_state(struct target *target, enum target_state state, unsigned int ms);
 
 /**
  * Obtain file-I/O information from target for GDB to do syscall.
@@ -701,7 +697,7 @@ unsigned target_address_bits(struct target *target);
 unsigned int target_data_bits(struct target *target);
 
 /** Return the *name* of this targets current state */
-const char *target_state_name(struct target *target);
+const char *target_state_name(const struct target *target);
 
 /** Return the *name* of a target event enumeration value */
 const char *target_event_name(enum target_event event);
@@ -785,7 +781,7 @@ void target_handle_event(struct target *t, enum target_event e);
 
 void target_handle_md_output(struct command_invocation *cmd,
 	struct target *target, target_addr_t address, unsigned size,
-	unsigned count, const uint8_t *buffer);
+	unsigned count, const uint8_t *buffer, bool include_address);
 
 int target_profiling_default(struct target *target, uint32_t *samples, uint32_t
 		max_num_samples, uint32_t *num_samples, uint32_t seconds);
@@ -803,9 +799,13 @@ int target_profiling_default(struct target *target, uint32_t *samples, uint32_t
 #define ERROR_TARGET_NOT_EXAMINED (-311)
 #define ERROR_TARGET_DUPLICATE_BREAKPOINT (-312)
 #define ERROR_TARGET_ALGO_EXIT  (-313)
+#define ERROR_TARGET_SIZE_NOT_SUPPORTED  (-314)
+#define ERROR_TARGET_PACKING_NOT_SUPPORTED  (-315)
 
 extern bool get_target_reset_nag(void);
 
 #define TARGET_DEFAULT_POLLING_INTERVAL		100
+
+const char *target_debug_reason_str(enum target_debug_reason reason);
 
 #endif /* OPENOCD_TARGET_TARGET_H */

@@ -85,9 +85,9 @@ static struct armjtagew *armjtagew_handle;
 /**************************************************************************
  * External interface implementation */
 
-static int armjtagew_execute_queue(void)
+static int armjtagew_execute_queue(struct jtag_command *cmd_queue)
 {
-	struct jtag_command *cmd = jtag_command_queue;
+	struct jtag_command *cmd = cmd_queue;
 	int scan_size;
 	enum scan_type type;
 	uint8_t *buffer;
@@ -213,7 +213,7 @@ static int armjtagew_init(void)
 
 	armjtagew_handle = armjtagew_usb_open();
 
-	if (armjtagew_handle == 0) {
+	if (!armjtagew_handle) {
 		LOG_ERROR(
 			"Cannot find ARM-JTAG-EW Interface! Please check connection and permissions.");
 		return ERROR_JTAG_INIT_FAILED;
@@ -677,7 +677,7 @@ static struct armjtagew *armjtagew_usb_open(void)
 	const uint16_t pids[] = { USB_PID, 0 };
 	struct libusb_device_handle *dev;
 
-	if (jtag_libusb_open(vids, pids, &dev, NULL) != ERROR_OK)
+	if (jtag_libusb_open(vids, pids, NULL, &dev, NULL) != ERROR_OK)
 		return NULL;
 
 	struct armjtagew *result = malloc(sizeof(struct armjtagew));

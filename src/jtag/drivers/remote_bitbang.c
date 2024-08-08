@@ -3,6 +3,8 @@
 /***************************************************************************
  *   Copyright (C) 2011 by Richard Uhler                                   *
  *   ruhler@mit.edu                                                        *
+ *                                                                         *
+ *   Copyright (C) 2021 by Manuel Wick <manuel@matronix.de>                *
  ***************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -28,6 +30,8 @@ static char *remote_bitbang_port;
 static int remote_bitbang_fd;
 static uint8_t remote_bitbang_send_buf[512];
 static unsigned int remote_bitbang_send_buf_used;
+
+static bool use_remote_sleep;
 
 /* Circular buffer. When start == end, the buffer is empty. */
 static char remote_bitbang_recv_buf[256];
@@ -214,10 +218,57 @@ static int remote_bitbang_reset(int trst, int srst)
 	return remote_bitbang_queue(c, FLUSH_SEND_BUF);
 }
 
+static int remote_bitbang_sleep(unsigned int microseconds)
+{
+	if (!use_remote_sleep) {
+		jtag_sleep(microseconds);
+		return ERROR_OK;
+	}
+
+	int tmp;
+	unsigned int ms = microseconds / 1000;
+	unsigned int us = microseconds % 1000;
+
+	for (unsigned int i = 0; i < ms; i++) {
+		tmp = remote_bitbang_queue('D', NO_FLUSH);
+		if (tmp != ERROR_OK)
+			return tmp;
+	}
+
+	for (unsigned int i = 0; i < us; i++) {
+		tmp = remote_bitbang_queue('d', NO_FLUSH);
+		if (tmp != ERROR_OK)
+			return tmp;
+	}
+
+	return remote_bitbang_flush();
+}
+
 static int remote_bitbang_blink(int on)
 {
 	char c = on ? 'B' : 'b';
 	return remote_bitbang_queue(c, FLUSH_SEND_BUF);
+}
+
+static void remote_bitbang_swdio_drive(bool is_output)
+{
+	char c = is_output ? 'O' : 'o';
+	if (remote_bitbang_queue(c, FLUSH_SEND_BUF) == ERROR_FAIL)
+		LOG_ERROR("Error setting direction for swdio");
+}
+
+static int remote_bitbang_swdio_read(void)
+{
+	if (remote_bitbang_queue('c', FLUSH_SEND_BUF) != ERROR_FAIL)
+		return remote_bitbang_read_sample();
+	else
+		return BB_ERROR;
+}
+
+static int remote_bitbang_swd_write(int swclk, int swdio)
+{
+	char c = 'd' + ((swclk ? 0x2 : 0x0) | (swdio ? 0x1 : 0x0));
+	return remote_bitbang_queue(c, NO_FLUSH);
 }
 
 static struct bitbang_interface remote_bitbang_bitbang = {
@@ -225,7 +276,12 @@ static struct bitbang_interface remote_bitbang_bitbang = {
 	.sample = &remote_bitbang_sample,
 	.read_sample = &remote_bitbang_read_sample,
 	.write = &remote_bitbang_write,
+	.swdio_read = &remote_bitbang_swdio_read,
+	.swdio_drive = &remote_bitbang_swdio_drive,
+	.swd_write = &remote_bitbang_swd_write,
 	.blink = &remote_bitbang_blink,
+	.sleep = &remote_bitbang_sleep,
+	.flush = &remote_bitbang_flush,
 };
 
 static int remote_bitbang_init_tcp(void)
@@ -349,6 +405,18 @@ COMMAND_HANDLER(remote_bitbang_handle_remote_bitbang_host_command)
 	return ERROR_COMMAND_SYNTAX_ERROR;
 }
 
+static const char * const remote_bitbang_transports[] = { "jtag", "swd", NULL };
+
+COMMAND_HANDLER(remote_bitbang_handle_remote_bitbang_use_remote_sleep_command)
+{
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	COMMAND_PARSE_ON_OFF(CMD_ARGV[0], use_remote_sleep);
+
+	return ERROR_OK;
+}
+
 static const struct command_registration remote_bitbang_subcommand_handlers[] = {
 	{
 		.name = "port",
@@ -366,7 +434,15 @@ static const struct command_registration remote_bitbang_subcommand_handlers[] = 
 			"  if port is 0 or unset, this is the name of the unix socket to use.",
 		.usage = "host_name",
 	},
-	COMMAND_REGISTRATION_DONE,
+	{
+		.name = "use_remote_sleep",
+		.handler = remote_bitbang_handle_remote_bitbang_use_remote_sleep_command,
+		.mode = COMMAND_CONFIG,
+		.help = "Rather than executing sleep locally, include delays in the "
+			"instruction stream for the remote host.",
+		.usage = "(on|off)",
+	},
+	COMMAND_REGISTRATION_DONE
 };
 
 static const struct command_registration remote_bitbang_command_handlers[] = {
@@ -380,14 +456,14 @@ static const struct command_registration remote_bitbang_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-static int remote_bitbang_execute_queue(void)
+static int remote_bitbang_execute_queue(struct jtag_command *cmd_queue)
 {
 	/* safety: the send buffer must be empty, no leftover characters from
 	 * previous transactions */
 	assert(remote_bitbang_send_buf_used == 0);
 
 	/* process the JTAG command queue */
-	int ret = bitbang_execute_queue();
+	int ret = bitbang_execute_queue(cmd_queue);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -401,7 +477,7 @@ static struct jtag_interface remote_bitbang_interface = {
 
 struct adapter_driver remote_bitbang_adapter_driver = {
 	.name = "remote_bitbang",
-	.transports = jtag_only,
+	.transports = remote_bitbang_transports,
 	.commands = remote_bitbang_command_handlers,
 
 	.init = &remote_bitbang_init,
@@ -409,4 +485,5 @@ struct adapter_driver remote_bitbang_adapter_driver = {
 	.reset = &remote_bitbang_reset,
 
 	.jtag_ops = &remote_bitbang_interface,
+	.swd_ops = &bitbang_swd,
 };

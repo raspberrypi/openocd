@@ -17,7 +17,6 @@
 #include <transport/transport.h>
 #include <helper/time_support.h>
 
-#include <jtag/hla/hla_tcl.h>
 #include <jtag/hla/hla_layout.h>
 #include <jtag/hla/hla_transport.h>
 #include <jtag/hla/hla_interface.h>
@@ -101,7 +100,7 @@ int hl_interface_init_target(struct target *t)
 	}
 
 	t->tap->priv = &hl_if;
-	t->tap->hasidcode = 1;
+	t->tap->has_idcode = true;
 
 	return ERROR_OK;
 }

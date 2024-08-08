@@ -151,12 +151,16 @@ static const unsigned swd_seq_swd_to_jtag_len = 80;
  * Bits are stored (and transmitted) LSB-first.
  */
 static const uint8_t swd_seq_swd_to_dormant[] = {
-	/* At least 50 SWCLK cycles with SWDIO high */
-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	/* At least 50 SWCLK cycles with SWDIO high.
+	 * Send more (at least 89, actually 96) to ensure the sequence works
+	 * in the middle of a SWD command, e.g. after error
+	 * if overrun detection is mismatched */
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff,
 	 /* Switching sequence from SWD to dormant */
 	0xbc, 0xe3,
 };
-static const unsigned swd_seq_swd_to_dormant_len = 72;
+static const unsigned swd_seq_swd_to_dormant_len = 112;
 
 /**
  * Dormant-to-SWD sequence.

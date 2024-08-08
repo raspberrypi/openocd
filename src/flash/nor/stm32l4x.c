@@ -58,6 +58,9 @@
 
 /* STM32WBxxx series for reference.
  *
+ * RM0493 (STM32WBA52x)
+ * http://www.st.com/resource/en/reference_manual/dm00821869.pdf
+ *
  * RM0434 (STM32WB55/WB35x)
  * http://www.st.com/resource/en/reference_manual/dm00318631.pdf
  *
@@ -78,6 +81,12 @@
  *
  * RM0453 (STM32WL5x)
  * http://www.st.com/resource/en/reference_manual/dm00451556.pdf
+ */
+
+/* STM32C0xxx series for reference.
+ *
+ * RM0490 (STM32C0x1)
+ * http://www.st.com/resource/en/reference_manual/dm00781702.pdf
  */
 
 /* STM32G0xxx series for reference.
@@ -263,7 +272,7 @@ struct stm32l4_wrp {
 };
 
 /* human readable list of families this drivers supports (sorted alphabetically) */
-static const char *device_families = "STM32G0/G4/L4/L4+/L5/U5/WB/WL";
+static const char *device_families = "STM32C0/G0/G4/L4/L4+/L5/U5/WB/WL";
 
 static const struct stm32l4_rev stm32l47_l48xx_revs[] = {
 	{ 0x1000, "1" }, { 0x1001, "2" }, { 0x1003, "3" }, { 0x1007, "4" }
@@ -271,6 +280,15 @@ static const struct stm32l4_rev stm32l47_l48xx_revs[] = {
 
 static const struct stm32l4_rev stm32l43_l44xx_revs[] = {
 	{ 0x1000, "A" }, { 0x1001, "Z" }, { 0x2001, "Y" },
+};
+
+
+static const struct stm32l4_rev stm32c01xx_revs[] = {
+	{ 0x1000, "A" }, { 0x1001, "Z" },
+};
+
+static const struct stm32l4_rev stm32c03xx_revs[] = {
+	{ 0x1000, "A" }, { 0x1001, "Z" },
 };
 
 static const struct stm32l4_rev stm32g05_g06xx_revs[] = {
@@ -311,6 +329,7 @@ static const struct stm32l4_rev stm32g47_g48xx_revs[] = {
 
 static const struct stm32l4_rev stm32l4r_l4sxx_revs[] = {
 	{ 0x1000, "A" }, { 0x1001, "Z" }, { 0x1003, "Y" }, { 0x100F, "W" },
+	{ 0x101F, "V" },
 };
 
 static const struct stm32l4_rev stm32l4p_l4qxx_revs[] = {
@@ -318,7 +337,7 @@ static const struct stm32l4_rev stm32l4p_l4qxx_revs[] = {
 };
 
 static const struct stm32l4_rev stm32l55_l56xx_revs[] = {
-	{ 0x1000, "A" }, { 0x2000, "B" },
+	{ 0x1000, "A" }, { 0x2000, "B" }, { 0x2001, "Z" },
 };
 
 static const struct stm32l4_rev stm32g49_g4axx_revs[] = {
@@ -327,6 +346,11 @@ static const struct stm32l4_rev stm32g49_g4axx_revs[] = {
 
 static const struct stm32l4_rev stm32u57_u58xx_revs[] = {
 	{ 0x1000, "A" }, { 0x1001, "Z" }, { 0x1003, "Y" }, { 0x2000, "B" },
+	{ 0x2001, "X" }, { 0x3000, "C" },
+};
+
+static const struct stm32l4_rev stm32wba5x_revs[] = {
+	{ 0x1000, "A" },
 };
 
 static const struct stm32l4_rev stm32wb1xx_revs[] = {
@@ -367,6 +391,30 @@ static const struct stm32l4_part_info stm32l4_parts[] = {
 	  .flags                 = F_NONE,
 	  .flash_regs_base       = 0x40022000,
 	  .fsize_addr            = 0x1FFF75E0,
+	  .otp_base              = 0x1FFF7000,
+	  .otp_size              = 1024,
+	},
+	{
+	  .id                    = DEVID_STM32C01XX,
+	  .revs                  = stm32c01xx_revs,
+	  .num_revs              = ARRAY_SIZE(stm32c01xx_revs),
+	  .device_str            = "STM32C01xx",
+	  .max_flash_size_kb     = 32,
+	  .flags                 = F_NONE,
+	  .flash_regs_base       = 0x40022000,
+	  .fsize_addr            = 0x1FFF75A0,
+	  .otp_base              = 0x1FFF7000,
+	  .otp_size              = 1024,
+	},
+	{
+	  .id                    = DEVID_STM32C03XX,
+	  .revs                  = stm32c03xx_revs,
+	  .num_revs              = ARRAY_SIZE(stm32c03xx_revs),
+	  .device_str            = "STM32C03xx",
+	  .max_flash_size_kb     = 32,
+	  .flags                 = F_NONE,
+	  .flash_regs_base       = 0x40022000,
+	  .fsize_addr            = 0x1FFF75A0,
 	  .otp_base              = 0x1FFF7000,
 	  .otp_size              = 1024,
 	},
@@ -536,6 +584,18 @@ static const struct stm32l4_part_info stm32l4_parts[] = {
 	  .flash_regs_base       = 0x40022000,
 	  .fsize_addr            = 0x0BFA07A0,
 	  .otp_base              = 0x0BFA0000,
+	  .otp_size              = 512,
+	},
+	{
+	  .id                    = DEVID_STM32WBA5X,
+	  .revs                  = stm32wba5x_revs,
+	  .num_revs              = ARRAY_SIZE(stm32wba5x_revs),
+	  .device_str            = "STM32WBA5x",
+	  .max_flash_size_kb     = 1024,
+	  .flags                 = F_QUAD_WORD_PROG | F_HAS_TZ | F_HAS_L5_FLASH_REGS,
+	  .flash_regs_base       = 0x40022000,
+	  .fsize_addr            = 0x0FF907A0,
+	  .otp_base              = 0x0FF90000,
 	  .otp_size              = 512,
 	},
 	{
@@ -1641,7 +1701,7 @@ static int stm32l4_read_idcode(struct flash_bank *bank, uint32_t *id)
 
 	/* CPU2 (Cortex-M0+) is supported only with non-hla adapters because it is on AP1.
 	 * Using HLA adapters armv7m.debug_ap is null, and checking ap_num triggers a segfault */
-	if (cortex_m_get_partno_safe(target) == CORTEX_M0P_PARTNO &&
+	if (cortex_m_get_impl_part(target) == CORTEX_M0P_PARTNO &&
 			armv7m->debug_ap && armv7m->debug_ap->ap_num == 1) {
 		uint32_t uid64_ids;
 
@@ -1740,7 +1800,8 @@ static int stm32l4_probe(struct flash_bank *bank)
 
 	/* Set flash write alignment boundaries.
 	 * Ask the flash infrastructure to ensure required alignment */
-	bank->write_start_alignment = bank->write_end_alignment = stm32l4_info->data_width;
+	bank->write_start_alignment = stm32l4_info->data_width;
+	bank->write_end_alignment = stm32l4_info->data_width;
 
 	/* Initialize the flash registers layout */
 	if (part_info->flags & F_HAS_L5_FLASH_REGS)
@@ -1853,6 +1914,8 @@ static int stm32l4_probe(struct flash_bank *bank)
 		}
 		break;
 	case DEVID_STM32L43_L44XX:
+	case DEVID_STM32C01XX:
+	case DEVID_STM32C03XX:
 	case DEVID_STM32G05_G06XX:
 	case DEVID_STM32G07_G08XX:
 	case DEVID_STM32L45_L46XX:
@@ -1948,6 +2011,12 @@ static int stm32l4_probe(struct flash_bank *bank)
 			stm32l4_info->dual_bank_mode = true;
 			stm32l4_info->bank1_sectors = num_pages / 2;
 		}
+		break;
+	case DEVID_STM32WBA5X:
+		/* single bank flash */
+		page_size_kb = 8;
+		num_pages = flash_size_kb / page_size_kb;
+		stm32l4_info->bank1_sectors = num_pages;
 		break;
 	case DEVID_STM32WB5XX:
 	case DEVID_STM32WB3XX:
@@ -2149,10 +2218,8 @@ err_lock:
 
 COMMAND_HANDLER(stm32l4_handle_mass_erase_command)
 {
-	if (CMD_ARGC < 1) {
-		command_print(CMD, "stm32l4x mass_erase <STM32L4 bank>");
+	if (CMD_ARGC != 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
 
 	struct flash_bank *bank;
 	int retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
@@ -2170,10 +2237,8 @@ COMMAND_HANDLER(stm32l4_handle_mass_erase_command)
 
 COMMAND_HANDLER(stm32l4_handle_option_read_command)
 {
-	if (CMD_ARGC < 2) {
-		command_print(CMD, "stm32l4x option_read <STM32L4 bank> <option_reg offset>");
+	if (CMD_ARGC != 2)
 		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
 
 	struct flash_bank *bank;
 	int retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
@@ -2197,10 +2262,8 @@ COMMAND_HANDLER(stm32l4_handle_option_read_command)
 
 COMMAND_HANDLER(stm32l4_handle_option_write_command)
 {
-	if (CMD_ARGC < 3) {
-		command_print(CMD, "stm32l4x option_write <STM32L4 bank> <option_reg offset> <value> [mask]");
+	if (CMD_ARGC != 3 && CMD_ARGC != 4)
 		return ERROR_COMMAND_SYNTAX_ERROR;
-	}
 
 	struct flash_bank *bank;
 	int retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
@@ -2312,7 +2375,7 @@ COMMAND_HANDLER(stm32l4_handle_lock_command)
 {
 	struct target *target = NULL;
 
-	if (CMD_ARGC < 1)
+	if (CMD_ARGC != 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	struct flash_bank *bank;
@@ -2347,7 +2410,7 @@ COMMAND_HANDLER(stm32l4_handle_unlock_command)
 {
 	struct target *target = NULL;
 
-	if (CMD_ARGC < 1)
+	if (CMD_ARGC != 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	struct flash_bank *bank;
@@ -2451,7 +2514,7 @@ COMMAND_HANDLER(stm32l4_handle_wrp_info_command)
 
 COMMAND_HANDLER(stm32l4_handle_otp_command)
 {
-	if (CMD_ARGC < 2)
+	if (CMD_ARGC != 2)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	struct flash_bank *bank;

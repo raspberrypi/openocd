@@ -7,6 +7,8 @@
 #include "jtag/jtag.h"
 #include "riscv.h"
 
+#include "target/arm_adi_v5.h"
+
 enum riscv_scan_type {
 	RISCV_SCAN_TYPE_INVALID,
 	RISCV_SCAN_TYPE_NOP,
@@ -44,6 +46,10 @@ struct riscv_batch {
 	/* The read keys. */
 	size_t *read_keys;
 	size_t read_keys_used;
+
+	bool emulated;
+	int queued_retval;
+	struct adiv5_ap *ap;
 };
 
 /* Allocates (or frees) a new scan set.  "scans" is the maximum number of JTAG
@@ -58,20 +64,24 @@ bool riscv_batch_full(struct riscv_batch *batch);
 /* Executes this scan batch. */
 int riscv_batch_run(struct riscv_batch *batch);
 
-/* Adds a DMI write to this batch. */
-void riscv_batch_add_dmi_write(struct riscv_batch *batch, unsigned address, uint64_t data);
+/* Adds a DM register write to this batch. */
+void riscv_batch_add_dm_write(struct riscv_batch *batch, uint64_t address, uint32_t data,
+	bool read_back);
 
-/* DMI reads must be handled in two parts: the first one schedules a read and
+/* DM register reads must be handled in two parts: the first one schedules a read and
  * provides a key, the second one actually obtains the result of the read -
  * status (op) and the actual data. */
-size_t riscv_batch_add_dmi_read(struct riscv_batch *batch, unsigned address);
-unsigned riscv_batch_get_dmi_read_op(struct riscv_batch *batch, size_t key);
-uint32_t riscv_batch_get_dmi_read_data(struct riscv_batch *batch, size_t key);
+size_t riscv_batch_add_dm_read(struct riscv_batch *batch, uint64_t address);
+unsigned int riscv_batch_get_dmi_read_op(const struct riscv_batch *batch, size_t key);
+uint32_t riscv_batch_get_dmi_read_data(const struct riscv_batch *batch, size_t key);
 
 /* Scans in a NOP. */
 void riscv_batch_add_nop(struct riscv_batch *batch);
 
 /* Returns the number of available scans. */
 size_t riscv_batch_available_scans(struct riscv_batch *batch);
+
+/* Return true iff the last scan in the batch returned DMI_OP_BUSY. */
+bool riscv_batch_dmi_busy_encountered(const struct riscv_batch *batch);
 
 #endif

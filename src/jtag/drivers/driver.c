@@ -76,16 +76,22 @@ int interface_jtag_add_ir_scan(struct jtag_tap *active,
 
 		if (tap == active) {
 			/* if TAP is listed in input fields, copy the value */
-			tap->bypass = 0;
+			tap->bypass = false;
 
 			jtag_scan_field_clone(field, in_fields);
 		} else {
 			/* if a TAP isn't listed in input fields, set it to BYPASS */
 
-			tap->bypass = 1;
+			tap->bypass = true;
 
 			field->num_bits = tap->ir_length;
-			field->out_value = buf_set_ones(cmd_queue_alloc(DIV_ROUND_UP(tap->ir_length, 8)), tap->ir_length);
+			if (tap->ir_bypass_value) {
+				uint8_t *v = cmd_queue_alloc(DIV_ROUND_UP(tap->ir_length, 8));
+				buf_set_u64(v, 0, tap->ir_length, tap->ir_bypass_value);
+				field->out_value = v;
+			} else {
+				field->out_value = buf_set_ones(cmd_queue_alloc(DIV_ROUND_UP(tap->ir_length, 8)), tap->ir_length);
+			}
 			field->in_value = NULL; /* do not collect input for tap's in bypass */
 		}
 
@@ -110,10 +116,19 @@ int interface_jtag_add_dr_scan(struct jtag_tap *active, int in_num_fields,
 	/* count devices in bypass */
 
 	size_t bypass_devices = 0;
+	size_t all_devices = 0;
 
 	for (struct jtag_tap *tap = jtag_tap_next_enabled(NULL); tap; tap = jtag_tap_next_enabled(tap)) {
+		all_devices++;
+
 		if (tap->bypass)
 			bypass_devices++;
+	}
+
+	if (all_devices == bypass_devices) {
+		LOG_ERROR("At least one TAP shouldn't be in BYPASS mode");
+
+		return ERROR_FAIL;
 	}
 
 	struct jtag_command *cmd = cmd_queue_alloc(sizeof(struct jtag_command));

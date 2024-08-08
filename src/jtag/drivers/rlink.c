@@ -632,7 +632,7 @@ static int dtc_queue_run(void)
 	uint8_t dtc_mask, tdo_mask;
 	uint8_t reply_buffer[USB_EP2IN_SIZE];
 
-	assert((dtc_queue.rq_head != 0) == (dtc_queue.reply_index > 0));
+	assert((!!dtc_queue.rq_head) == (dtc_queue.reply_index > 0));
 	assert(dtc_queue.cmd_index < USB_EP2BANK_SIZE);
 	assert(dtc_queue.reply_index <= USB_EP2IN_SIZE);
 
@@ -1262,9 +1262,9 @@ static int rlink_scan(struct jtag_command *cmd, enum scan_type type,
 	return 0;
 }
 
-static int rlink_execute_queue(void)
+static int rlink_execute_queue(struct jtag_command *cmd_queue)
 {
-	struct jtag_command *cmd = jtag_command_queue;	/* currently processed command */
+	struct jtag_command *cmd = cmd_queue;	/* currently processed command */
 	int scan_size;
 	enum scan_type type;
 	uint8_t *buffer;
@@ -1448,7 +1448,7 @@ static int rlink_init(void)
 
 	const uint16_t vids[] = { USB_IDVENDOR, 0 };
 	const uint16_t pids[] = { USB_IDPRODUCT, 0 };
-	if (jtag_libusb_open(vids, pids, &hdev, NULL) != ERROR_OK)
+	if (jtag_libusb_open(vids, pids, NULL, &hdev, NULL) != ERROR_OK)
 		return ERROR_FAIL;
 
 	struct libusb_device_descriptor descriptor;

@@ -651,9 +651,6 @@ static int psoc4_write(struct flash_bank *bank, const uint8_t *buffer,
 	if (row_offset)
 		memset(row_buffer, bank->default_padded_value, row_offset);
 
-	/* Mask automatic polling triggered by execution of halted events */
-	bool save_poll_mask = jtag_poll_mask();
-
 	while (count) {
 		uint32_t chunk_size = psoc4_info->row_size - row_offset;
 		if (chunk_size > count) {
@@ -693,8 +690,6 @@ static int psoc4_write(struct flash_bank *bank, const uint8_t *buffer,
 	}
 
 cleanup:
-	jtag_poll_unmask(save_poll_mask);
-
 	free(sysrq_buffer);
 	return retval;
 }
@@ -784,7 +779,7 @@ static int psoc4_probe(struct flash_bank *bank)
 		flash_size_in_kb = psoc4_info->user_bank_size / 1024;
 	}
 
-	char macros_txt[20] = "";
+	char macros_txt[22] = "";
 	if (num_macros > 1)
 		snprintf(macros_txt, sizeof(macros_txt), " in %" PRIu32 " macros", num_macros);
 

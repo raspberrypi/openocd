@@ -24,6 +24,7 @@
 #include "image.h"
 #include "target.h"
 #include <helper/log.h>
+#include <server/server.h>
 
 /* convert ELF header field to host endianness */
 #define field16(elf, field) \
@@ -50,12 +51,15 @@ static int autodetect_image_type(struct image *image, const char *url)
 	if (retval != ERROR_OK)
 		return retval;
 	retval = fileio_read(fileio, 9, buffer, &read_bytes);
-
-	if (retval == ERROR_OK) {
-		if (read_bytes != 9)
-			retval = ERROR_FILEIO_OPERATION_FAILED;
-	}
 	fileio_close(fileio);
+
+	/* If the file is smaller than 9 bytes, it can only be bin */
+	if (retval == ERROR_OK && read_bytes != 9) {
+		LOG_DEBUG("Less than 9 bytes in the image file found.");
+		LOG_DEBUG("BIN image detected.");
+		image->type = IMAGE_BINARY;
+		return ERROR_OK;
+	}
 
 	if (retval != ERROR_OK)
 		return retval;
@@ -82,8 +86,10 @@ static int autodetect_image_type(struct image *image, const char *url)
 		&& (buffer[1] >= '0') && (buffer[1] < '9')) {
 		LOG_DEBUG("S19 image detected.");
 		image->type = IMAGE_SRECORD;
-	} else
+	} else {
+		LOG_DEBUG("BIN image detected.");
 		image->type = IMAGE_BINARY;
+	}
 
 	return ERROR_OK;
 }
@@ -91,20 +97,22 @@ static int autodetect_image_type(struct image *image, const char *url)
 static int identify_image_type(struct image *image, const char *type_string, const char *url)
 {
 	if (type_string) {
-		if (!strcmp(type_string, "bin"))
+		if (!strcmp(type_string, "bin")) {
 			image->type = IMAGE_BINARY;
-		else if (!strcmp(type_string, "ihex"))
+		} else if (!strcmp(type_string, "ihex")) {
 			image->type = IMAGE_IHEX;
-		else if (!strcmp(type_string, "elf"))
+		} else if (!strcmp(type_string, "elf")) {
 			image->type = IMAGE_ELF;
-		else if (!strcmp(type_string, "mem"))
+		} else if (!strcmp(type_string, "mem")) {
 			image->type = IMAGE_MEMORY;
-		else if (!strcmp(type_string, "s19"))
+		} else if (!strcmp(type_string, "s19")) {
 			image->type = IMAGE_SRECORD;
-		else if (!strcmp(type_string, "build"))
+		} else if (!strcmp(type_string, "build")) {
 			image->type = IMAGE_BUILDER;
-		else
+		} else {
+			LOG_ERROR("Unknown image type: %s, use one of: bin, ihex, elf, mem, s19, build", type_string);
 			return ERROR_IMAGE_TYPE_UNKNOWN;
+		}
 	} else
 		return autodetect_image_type(image, url);
 
@@ -961,12 +969,13 @@ int image_open(struct image *image, const char *url, const char *type_string)
 
 		retval = fileio_open(&image_binary->fileio, url, FILEIO_READ, FILEIO_BINARY);
 		if (retval != ERROR_OK)
-			return retval;
+			goto free_mem_on_error;
+
 		size_t filesize;
 		retval = fileio_size(image_binary->fileio, &filesize);
 		if (retval != ERROR_OK) {
 			fileio_close(image_binary->fileio);
-			return retval;
+			goto free_mem_on_error;
 		}
 
 		image->num_sections = 1;
@@ -981,14 +990,14 @@ int image_open(struct image *image, const char *url, const char *type_string)
 
 		retval = fileio_open(&image_ihex->fileio, url, FILEIO_READ, FILEIO_TEXT);
 		if (retval != ERROR_OK)
-			return retval;
+			goto free_mem_on_error;
 
 		retval = image_ihex_buffer_complete(image);
 		if (retval != ERROR_OK) {
 			LOG_ERROR(
 				"failed buffering IHEX image, check server output for additional information");
 			fileio_close(image_ihex->fileio);
-			return retval;
+			goto free_mem_on_error;
 		}
 	} else if (image->type == IMAGE_ELF) {
 		struct image_elf *image_elf;
@@ -997,12 +1006,12 @@ int image_open(struct image *image, const char *url, const char *type_string)
 
 		retval = fileio_open(&image_elf->fileio, url, FILEIO_READ, FILEIO_BINARY);
 		if (retval != ERROR_OK)
-			return retval;
+			goto free_mem_on_error;
 
 		retval = image_elf_read_headers(image);
 		if (retval != ERROR_OK) {
 			fileio_close(image_elf->fileio);
-			return retval;
+			goto free_mem_on_error;
 		}
 	} else if (image->type == IMAGE_MEMORY) {
 		struct target *target = get_target(url);
@@ -1032,14 +1041,14 @@ int image_open(struct image *image, const char *url, const char *type_string)
 
 		retval = fileio_open(&image_mot->fileio, url, FILEIO_READ, FILEIO_TEXT);
 		if (retval != ERROR_OK)
-			return retval;
+			goto free_mem_on_error;
 
 		retval = image_mot_buffer_complete(image);
 		if (retval != ERROR_OK) {
 			LOG_ERROR(
 				"failed buffering S19 image, check server output for additional information");
 			fileio_close(image_mot->fileio);
-			return retval;
+			goto free_mem_on_error;
 		}
 	} else if (image->type == IMAGE_BUILDER) {
 		image->num_sections = 0;
@@ -1059,6 +1068,11 @@ int image_open(struct image *image, const char *url, const char *type_string)
 		image->base_address_set = false;
 	}
 
+	return retval;
+
+free_mem_on_error:
+	free(image->type_private);
+	image->type_private = NULL;
 	return retval;
 };
 
@@ -1282,6 +1296,8 @@ int image_calculate_checksum(const uint8_t *buffer, uint32_t nbytes, uint32_t *c
 			crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ *buffer++) & 255];
 		}
 		keep_alive();
+		if (openocd_is_shutdown_pending())
+			return ERROR_SERVER_INTERRUPTED;
 	}
 
 	LOG_DEBUG("Calculating checksum done; checksum=0x%" PRIx32, crc);

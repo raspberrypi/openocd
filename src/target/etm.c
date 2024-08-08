@@ -552,8 +552,8 @@ static int etm_set_reg(struct reg *reg, uint32_t value)
 	}
 
 	buf_set_u32(reg->value, 0, reg->size, value);
-	reg->valid = 1;
-	reg->dirty = 0;
+	reg->valid = true;
+	reg->dirty = false;
 
 	return ERROR_OK;
 }
@@ -1706,7 +1706,7 @@ COMMAND_HANDLER(handle_etm_dump_command)
 		return ERROR_FAIL;
 	}
 
-	if (etm_ctx->capture_driver->status == TRACE_IDLE) {
+	if (etm_ctx->capture_driver->status(etm_ctx) == TRACE_IDLE) {
 		command_print(CMD, "trace capture wasn't enabled, no trace data captured");
 		return ERROR_OK;
 	}

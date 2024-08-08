@@ -31,6 +31,7 @@
 #endif
 
 #include <helper/align.h>
+#include <helper/nvp.h>
 #include <helper/time_support.h>
 #include <jtag/jtag.h>
 #include <flash/nor/core.h>
@@ -55,57 +56,11 @@ static int target_read_buffer_default(struct target *target, target_addr_t addre
 		uint32_t count, uint8_t *buffer);
 static int target_write_buffer_default(struct target *target, target_addr_t address,
 		uint32_t count, const uint8_t *buffer);
-static int target_array2mem(Jim_Interp *interp, struct target *target,
-		int argc, Jim_Obj * const *argv);
-static int target_mem2array(Jim_Interp *interp, struct target *target,
-		int argc, Jim_Obj * const *argv);
 static int target_register_user_commands(struct command_context *cmd_ctx);
 static int target_get_gdb_fileio_info_default(struct target *target,
 		struct gdb_fileio_info *fileio_info);
 static int target_gdb_fileio_end_default(struct target *target, int retcode,
 		int fileio_errno, bool ctrl_c);
-
-/* targets */
-extern struct target_type arm7tdmi_target;
-extern struct target_type arm720t_target;
-extern struct target_type arm9tdmi_target;
-extern struct target_type arm920t_target;
-extern struct target_type arm966e_target;
-extern struct target_type arm946e_target;
-extern struct target_type arm926ejs_target;
-extern struct target_type fa526_target;
-extern struct target_type feroceon_target;
-extern struct target_type dragonite_target;
-extern struct target_type xscale_target;
-extern struct target_type xtensa_chip_target;
-extern struct target_type cortexm_target;
-extern struct target_type cortexa_target;
-extern struct target_type aarch64_target;
-extern struct target_type cortexr4_target;
-extern struct target_type arm11_target;
-extern struct target_type ls1_sap_target;
-extern struct target_type mips_m4k_target;
-extern struct target_type mips_mips64_target;
-extern struct target_type avr_target;
-extern struct target_type dsp563xx_target;
-extern struct target_type dsp5680xx_target;
-extern struct target_type testee_target;
-extern struct target_type avr32_ap7k_target;
-extern struct target_type hla_target;
-extern struct target_type nds32_v2_target;
-extern struct target_type nds32_v3_target;
-extern struct target_type nds32_v3m_target;
-extern struct target_type esp32_target;
-extern struct target_type esp32s2_target;
-extern struct target_type esp32s3_target;
-extern struct target_type or1k_target;
-extern struct target_type quark_x10xx_target;
-extern struct target_type quark_d20xx_target;
-extern struct target_type stm8_target;
-extern struct target_type riscv_target;
-extern struct target_type mem_ap_target;
-extern struct target_type esirisc_target;
-extern struct target_type arcv2_target;
 
 static struct target_type *target_types[] = {
 	&arm7tdmi_target,
@@ -132,9 +87,6 @@ static struct target_type *target_types[] = {
 	&testee_target,
 	&avr32_ap7k_target,
 	&hla_target,
-	&nds32_v2_target,
-	&nds32_v3_target,
-	&nds32_v3m_target,
 	&esp32_target,
 	&esp32s2_target,
 	&esp32s3_target,
@@ -147,6 +99,7 @@ static struct target_type *target_types[] = {
 	&esirisc_target,
 	&arcv2_target,
 	&aarch64_target,
+	&armv8r_target,
 	&mips_mips64_target,
 	NULL,
 };
@@ -160,7 +113,12 @@ static LIST_HEAD(target_trace_callback_list);
 static const int polling_interval = TARGET_DEFAULT_POLLING_INTERVAL;
 static LIST_HEAD(empty_smp_targets);
 
-static const struct jim_nvp nvp_assert[] = {
+enum nvp_assert {
+	NVP_DEASSERT,
+	NVP_ASSERT,
+};
+
+static const struct nvp nvp_assert[] = {
 	{ .name = "assert", NVP_ASSERT },
 	{ .name = "deassert", NVP_DEASSERT },
 	{ .name = "T", NVP_ASSERT },
@@ -170,7 +128,7 @@ static const struct jim_nvp nvp_assert[] = {
 	{ .name = NULL, .value = -1 }
 };
 
-static const struct jim_nvp nvp_error_target[] = {
+static const struct nvp nvp_error_target[] = {
 	{ .value = ERROR_TARGET_INVALID, .name = "err-invalid" },
 	{ .value = ERROR_TARGET_INIT_FAILED, .name = "err-init-failed" },
 	{ .value = ERROR_TARGET_TIMEOUT, .name = "err-timeout" },
@@ -187,9 +145,9 @@ static const struct jim_nvp nvp_error_target[] = {
 
 static const char *target_strerror_safe(int err)
 {
-	const struct jim_nvp *n;
+	const struct nvp *n;
 
-	n = jim_nvp_value2name_simple(nvp_error_target, err);
+	n = nvp_value2name(nvp_error_target, err);
 	if (!n->name)
 		return "unknown";
 	else
@@ -248,16 +206,17 @@ static const struct jim_nvp nvp_target_event[] = {
 	{ .name = NULL, .value = -1 }
 };
 
-static const struct jim_nvp nvp_target_state[] = {
+static const struct nvp nvp_target_state[] = {
 	{ .name = "unknown", .value = TARGET_UNKNOWN },
 	{ .name = "running", .value = TARGET_RUNNING },
 	{ .name = "halted",  .value = TARGET_HALTED },
 	{ .name = "reset",   .value = TARGET_RESET },
 	{ .name = "debug-running", .value = TARGET_DEBUG_RUNNING },
+	{ .name = "unavailable", .value = TARGET_UNAVAILABLE },
 	{ .name = NULL, .value = -1 },
 };
 
-static const struct jim_nvp nvp_target_debug_reason[] = {
+static const struct nvp nvp_target_debug_reason[] = {
 	{ .name = "debug-request",             .value = DBG_REASON_DBGRQ },
 	{ .name = "breakpoint",                .value = DBG_REASON_BREAKPOINT },
 	{ .name = "watchpoint",                .value = DBG_REASON_WATCHPOINT },
@@ -278,7 +237,7 @@ static const struct jim_nvp nvp_target_endian[] = {
 	{ .name = NULL,     .value = -1 },
 };
 
-static const struct jim_nvp nvp_reset_modes[] = {
+static const struct nvp nvp_reset_modes[] = {
 	{ .name = "unknown", .value = RESET_UNKNOWN },
 	{ .name = "run",     .value = RESET_RUN },
 	{ .name = "halt",    .value = RESET_HALT },
@@ -286,11 +245,11 @@ static const struct jim_nvp nvp_reset_modes[] = {
 	{ .name = NULL,      .value = -1 },
 };
 
-const char *debug_reason_name(struct target *t)
+const char *debug_reason_name(const struct target *t)
 {
 	const char *cp;
 
-	cp = jim_nvp_value2name_simple(nvp_target_debug_reason,
+	cp = nvp_value2name(nvp_target_debug_reason,
 			t->debug_reason)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid debug reason: %d", (int)(t->debug_reason));
@@ -299,10 +258,10 @@ const char *debug_reason_name(struct target *t)
 	return cp;
 }
 
-const char *target_state_name(struct target *t)
+const char *target_state_name(const struct target *t)
 {
 	const char *cp;
-	cp = jim_nvp_value2name_simple(nvp_target_state, t->state)->name;
+	cp = nvp_value2name(nvp_target_state, t->state)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid target state: %d", (int)(t->state));
 		cp = "(*BUG*unknown*BUG*)";
@@ -328,29 +287,12 @@ const char *target_event_name(enum target_event event)
 const char *target_reset_mode_name(enum target_reset_mode reset_mode)
 {
 	const char *cp;
-	cp = jim_nvp_value2name_simple(nvp_reset_modes, reset_mode)->name;
+	cp = nvp_value2name(nvp_reset_modes, reset_mode)->name;
 	if (!cp) {
 		LOG_ERROR("Invalid target reset mode: %d", (int)(reset_mode));
 		cp = "(*BUG*unknown*BUG*)";
 	}
 	return cp;
-}
-
-/* determine the number of the new target */
-static int new_target_number(void)
-{
-	struct target *t;
-	int x;
-
-	/* number is 0 based */
-	x = -1;
-	t = all_targets;
-	while (t) {
-		if (x < t->target_number)
-			x = t->target_number;
-		t = t->next;
-	}
-	return x + 1;
 }
 
 static void append_to_list_all_targets(struct target *target)
@@ -488,7 +430,7 @@ void target_buffer_set_u16_array(struct target *target, uint8_t *buffer, uint32_
 		target_buffer_set_u16(target, &buffer[i * 2], srcbuf[i]);
 }
 
-/* return a pointer to a configured target; id is name or number */
+/* return a pointer to a configured target; id is name or index in all_targets */
 struct target *get_target(const char *id)
 {
 	struct target *target;
@@ -501,36 +443,17 @@ struct target *get_target(const char *id)
 			return target;
 	}
 
-	/* It's OK to remove this fallback sometime after August 2010 or so */
-
-	/* no match, try as number */
-	unsigned num;
-	if (parse_uint(id, &num) != ERROR_OK)
+	/* try as index */
+	unsigned int index, counter;
+	if (parse_uint(id, &index) != ERROR_OK)
 		return NULL;
 
-	for (target = all_targets; target; target = target->next) {
-		if (target->target_number == (int)num) {
-			LOG_WARNING("use '%s' as target identifier, not '%u'",
-					target_name(target), num);
-			return target;
-		}
-	}
+	for (target = all_targets, counter = index;
+			target && counter;
+			target = target->next, --counter)
+		;
 
-	return NULL;
-}
-
-/* returns a pointer to the n-th configured target */
-struct target *get_target_by_num(int num)
-{
-	struct target *target = all_targets;
-
-	while (target) {
-		if (target->target_number == num)
-			return target;
-		target = target->next;
-	}
-
-	return NULL;
+	return target;
 }
 
 struct target *get_current_target(struct command_context *cmd_ctx)
@@ -672,8 +595,8 @@ static int target_process_reset(struct command_invocation *cmd, enum target_rese
 {
 	char buf[100];
 	int retval;
-	struct jim_nvp *n;
-	n = jim_nvp_value2name_simple(nvp_reset_modes, reset_mode);
+	const struct nvp *n;
+	n = nvp_value2name(nvp_reset_modes, reset_mode);
 	if (!n->name) {
 		LOG_ERROR("invalid reset mode");
 		return ERROR_FAIL;
@@ -749,10 +672,14 @@ static int default_check_reset(struct target *target)
  * Keep in sync */
 int target_examine_one(struct target *target)
 {
+	LOG_TARGET_DEBUG(target, "Examination started");
+
 	target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_START);
 
 	int retval = target->type->examine(target);
 	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Examination failed");
+		LOG_TARGET_DEBUG(target, "examine() returned error code %d", retval);
 		target_reset_examined(target);
 		target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_FAIL);
 		return retval;
@@ -761,6 +688,7 @@ int target_examine_one(struct target *target)
 	target_set_examined(target);
 	target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_END);
 
+	LOG_TARGET_INFO(target, "Examination succeed");
 	return ERROR_OK;
 }
 
@@ -806,7 +734,7 @@ int target_examine(void)
 	return retval;
 }
 
-const char *target_type_name(struct target *target)
+const char *target_type_name(const struct target *target)
 {
 	return target->type->name;
 }
@@ -847,7 +775,7 @@ int target_run_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_param,
 		target_addr_t entry_point, target_addr_t exit_point,
-		int timeout_ms, void *arch_info)
+		unsigned int timeout_ms, void *arch_info)
 {
 	int retval = ERROR_FAIL;
 
@@ -931,7 +859,7 @@ done:
 int target_wait_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
-		target_addr_t exit_point, int timeout_ms,
+		target_addr_t exit_point, unsigned int timeout_ms,
 		void *arch_info)
 {
 	int retval = ERROR_FAIL;
@@ -1273,6 +1201,10 @@ int target_run_read_async_algorithm(struct target *target,
 		/* Avoid GDB timeouts */
 		keep_alive();
 
+		if (openocd_is_shutdown_pending()) {
+			retval = ERROR_SERVER_INTERRUPTED;
+			break;
+		}
 	}
 
 	if (retval != ERROR_OK) {
@@ -1363,7 +1295,7 @@ int target_add_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if ((target->state != TARGET_HALTED) && (breakpoint->type != BKPT_HARD)) {
-		LOG_WARNING("target %s is not halted (add breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_breakpoint(target, breakpoint);
@@ -1373,7 +1305,7 @@ int target_add_context_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add context breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add context breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_context_breakpoint(target, breakpoint);
@@ -1383,7 +1315,7 @@ int target_add_hybrid_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add hybrid breakpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add hybrid breakpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_hybrid_breakpoint(target, breakpoint);
@@ -1399,7 +1331,7 @@ int target_add_watchpoint(struct target *target,
 		struct watchpoint *watchpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (add watchpoint)", target_name(target));
+		LOG_TARGET_ERROR(target, "not halted (add watchpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->add_watchpoint(target, watchpoint);
@@ -1413,7 +1345,7 @@ int target_hit_watchpoint(struct target *target,
 		struct watchpoint **hit_watchpoint)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (hit watchpoint)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (hit watchpoint)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 
@@ -1427,7 +1359,7 @@ int target_hit_watchpoint(struct target *target,
 	return target->type->hit_watchpoint(target, hit_watchpoint);
 }
 
-const char *target_get_gdb_arch(struct target *target)
+const char *target_get_gdb_arch(const struct target *target)
 {
 	if (!target->type->get_gdb_arch)
 		return NULL;
@@ -1467,7 +1399,7 @@ int target_get_gdb_reg_list_noread(struct target *target,
 	return target_get_gdb_reg_list(target, reg_list, reg_list_size, reg_class);
 }
 
-bool target_supports_gdb_connection(struct target *target)
+bool target_supports_gdb_connection(const struct target *target)
 {
 	/*
 	 * exclude all the targets that don't provide get_gdb_reg_list
@@ -1495,7 +1427,7 @@ int target_step(struct target *target,
 int target_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fileio_info)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (gdb fileio)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (gdb fileio)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->get_gdb_fileio_info(target, fileio_info);
@@ -1504,7 +1436,7 @@ int target_get_gdb_fileio_info(struct target *target, struct gdb_fileio_info *fi
 int target_gdb_fileio_end(struct target *target, int retcode, int fileio_errno, bool ctrl_c)
 {
 	if (target->state != TARGET_HALTED) {
-		LOG_WARNING("target %s is not halted (gdb fileio end)", target->cmd_name);
+		LOG_TARGET_ERROR(target, "not halted (gdb fileio end)");
 		return ERROR_TARGET_NOT_HALTED;
 	}
 	return target->type->gdb_fileio_end(target, retcode, fileio_errno, ctrl_c);
@@ -1860,7 +1792,7 @@ int target_call_reset_callbacks(struct target *target, enum target_reset_mode re
 	struct target_reset_callback *callback;
 
 	LOG_DEBUG("target reset %i (%s)", reset_mode,
-			jim_nvp_value2name_simple(nvp_reset_modes, reset_mode)->name);
+			nvp_value2name(nvp_reset_modes, reset_mode)->name);
 
 	list_for_each_entry(callback, &target_reset_callback_list, list)
 		callback->callback(target, reset_mode, callback->priv);
@@ -1944,13 +1876,13 @@ static int target_call_timer_callbacks_check_time(int checktime)
 	return ERROR_OK;
 }
 
-int target_call_timer_callbacks()
+int target_call_timer_callbacks(void)
 {
 	return target_call_timer_callbacks_check_time(1);
 }
 
 /* invoke periodic callbacks immediately */
-int target_call_timer_callbacks_now()
+int target_call_timer_callbacks_now(void)
 {
 	return target_call_timer_callbacks_check_time(0);
 }
@@ -2250,6 +2182,9 @@ uint32_t target_get_working_area_avail(struct target *target)
 
 static void target_destroy(struct target *target)
 {
+	breakpoint_remove_all(target);
+	watchpoint_remove_all(target);
+
 	if (target->type->deinit_target)
 		target->type->deinit_target(target);
 
@@ -2878,10 +2813,10 @@ COMMAND_HANDLER(handle_targets_command)
 		}
 	}
 
-	struct target *target = all_targets;
+	unsigned int index = 0;
 	command_print(CMD, "    TargetName         Type       Endian TapName            State       ");
 	command_print(CMD, "--  ------------------ ---------- ------ ------------------ ------------");
-	while (target) {
+	for (struct target *target = all_targets; target; target = target->next, ++index) {
 		const char *state;
 		char marker = ' ';
 
@@ -2896,7 +2831,7 @@ COMMAND_HANDLER(handle_targets_command)
 		/* keep columns lined up to match the headers above */
 		command_print(CMD,
 				"%2d%c %-18s %-10s %-6s %-18s %s",
-				target->target_number,
+				index,
 				marker,
 				target_name(target),
 				target_type_name(target),
@@ -2904,7 +2839,6 @@ COMMAND_HANDLER(handle_targets_command)
 					target->endianness)->name,
 				target->tap->dotted_name,
 				state);
-		target = target->next;
 	}
 
 	return retval;
@@ -3090,6 +3024,10 @@ COMMAND_HANDLER(handle_reg_command)
 	LOG_DEBUG("-");
 
 	struct target *target = get_current_target(CMD_CTX);
+	if (!target_was_examined(target)) {
+		LOG_ERROR("Target not examined yet");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
 	struct reg *reg = NULL;
 
 	/* list all available registers for the current target */
@@ -3154,7 +3092,7 @@ COMMAND_HANDLER(handle_reg_command)
 		if (!reg) {
 			command_print(CMD, "%i is out of bounds, the current target "
 					"has only %i registers (0 - %i)", num, count, count - 1);
-			return ERROR_OK;
+			return ERROR_FAIL;
 		}
 	} else {
 		/* access a single register by its name */
@@ -3173,9 +3111,9 @@ COMMAND_HANDLER(handle_reg_command)
 	if ((CMD_ARGC == 1) || ((CMD_ARGC == 2) && !((CMD_ARGV[1][0] >= '0')
 			&& (CMD_ARGV[1][0] <= '9')))) {
 		if ((CMD_ARGC == 2) && (strcmp(CMD_ARGV[1], "force") == 0))
-			reg->valid = 0;
+			reg->valid = false;
 
-		if (reg->valid == 0) {
+		if (!reg->valid) {
 			int retval = reg->type->get(reg);
 			if (retval != ERROR_OK) {
 				LOG_ERROR("Could not read register '%s'", reg->name);
@@ -3213,7 +3151,7 @@ COMMAND_HANDLER(handle_reg_command)
 
 not_found:
 	command_print(CMD, "register %s not found in current target", CMD_ARGV[0]);
-	return ERROR_OK;
+	return ERROR_FAIL;
 }
 
 COMMAND_HANDLER(handle_poll_command)
@@ -3267,7 +3205,7 @@ COMMAND_HANDLER(handle_wait_halt_command)
  *
  * After 500ms, keep_alive() is invoked
  */
-int target_wait_state(struct target *target, enum target_state state, int ms)
+int target_wait_state(struct target *target, enum target_state state, unsigned int ms)
 {
 	int retval;
 	int64_t then = 0, cur;
@@ -3284,15 +3222,18 @@ int target_wait_state(struct target *target, enum target_state state, int ms)
 			once = false;
 			then = timeval_ms();
 			LOG_DEBUG("waiting for target %s...",
-				jim_nvp_value2name_simple(nvp_target_state, state)->name);
+				nvp_value2name(nvp_target_state, state)->name);
 		}
 
-		if (cur-then > 500)
+		if (cur - then > 500) {
 			keep_alive();
+			if (openocd_is_shutdown_pending())
+				return ERROR_SERVER_INTERRUPTED;
+		}
 
 		if ((cur-then) > ms) {
 			LOG_ERROR("timed out while waiting for target %s",
-				jim_nvp_value2name_simple(nvp_target_state, state)->name);
+				nvp_value2name(nvp_target_state, state)->name);
 			return ERROR_FAIL;
 		}
 	}
@@ -3342,8 +3283,8 @@ COMMAND_HANDLER(handle_reset_command)
 
 	enum target_reset_mode reset_mode = RESET_RUN;
 	if (CMD_ARGC == 1) {
-		const struct jim_nvp *n;
-		n = jim_nvp_name2value_simple(nvp_reset_modes, CMD_ARGV[0]);
+		const struct nvp *n;
+		n = nvp_name2value(nvp_reset_modes, CMD_ARGV[0]);
 		if ((!n->name) || (n->value == RESET_UNKNOWN))
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		reset_mode = n->value;
@@ -3398,7 +3339,7 @@ COMMAND_HANDLER(handle_step_command)
 
 void target_handle_md_output(struct command_invocation *cmd,
 		struct target *target, target_addr_t address, unsigned size,
-		unsigned count, const uint8_t *buffer)
+		unsigned count, const uint8_t *buffer, bool include_address)
 {
 	const unsigned line_bytecnt = 32;
 	unsigned line_modulo = line_bytecnt / size;
@@ -3427,7 +3368,7 @@ void target_handle_md_output(struct command_invocation *cmd,
 	}
 
 	for (unsigned i = 0; i < count; i++) {
-		if (i % line_modulo == 0) {
+		if (include_address && (i % line_modulo == 0)) {
 			output_len += snprintf(output + output_len,
 					sizeof(output) - output_len,
 					TARGET_ADDR_FMT ": ",
@@ -3511,7 +3452,8 @@ COMMAND_HANDLER(handle_md_command)
 	struct target *target = get_current_target(CMD_CTX);
 	int retval = fn(target, address, size, count, buffer);
 	if (retval == ERROR_OK)
-		target_handle_md_output(CMD, target, address, size, count, buffer);
+		target_handle_md_output(CMD, target, address, size, count, buffer,
+				true);
 
 	free(buffer);
 
@@ -3570,6 +3512,11 @@ static int target_fill_mem(struct target *target,
 			break;
 		/* avoid GDB timeouts */
 		keep_alive();
+
+		if (openocd_is_shutdown_pending()) {
+			retval = ERROR_SERVER_INTERRUPTED;
+			break;
+		}
 	}
 	free(target_buf);
 
@@ -3912,6 +3859,12 @@ static COMMAND_HELPER(handle_verify_image_command_internal, enum verify_mode ver
 							}
 						}
 						keep_alive();
+						if (openocd_is_shutdown_pending()) {
+							retval = ERROR_SERVER_INTERRUPTED;
+							free(data);
+							free(buffer);
+							goto done;
+						}
 					}
 				}
 				free(data);
@@ -3964,24 +3917,24 @@ static int handle_bp_command_list(struct command_invocation *cmd)
 		if (breakpoint->type == BKPT_SOFT) {
 			char *buf = buf_to_hex_str(breakpoint->orig_instr,
 					breakpoint->length);
-			command_print(cmd, "IVA breakpoint: " TARGET_ADDR_FMT ", 0x%x, 0x%s",
+			command_print(cmd, "Software breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, orig_instr=0x%s",
 					breakpoint->address,
 					breakpoint->length,
 					buf);
 			free(buf);
 		} else {
 			if ((breakpoint->address == 0) && (breakpoint->asid != 0))
-				command_print(cmd, "Context breakpoint: 0x%8.8" PRIx32 ", 0x%x, %u",
+				command_print(cmd, "Context breakpoint: asid=0x%8.8" PRIx32 ", len=0x%x, num=%u",
 							breakpoint->asid,
 							breakpoint->length, breakpoint->number);
 			else if ((breakpoint->address != 0) && (breakpoint->asid != 0)) {
-				command_print(cmd, "Hybrid breakpoint(IVA): " TARGET_ADDR_FMT ", 0x%x, %u",
+				command_print(cmd, "Hybrid breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, num=%u",
 							breakpoint->address,
 							breakpoint->length, breakpoint->number);
 				command_print(cmd, "\t|--->linked with ContextID: 0x%8.8" PRIx32,
 							breakpoint->asid);
 			} else
-				command_print(cmd, "Breakpoint(IVA): " TARGET_ADDR_FMT ", 0x%x, %u",
+				command_print(cmd, "Hardware breakpoint(IVA): addr=" TARGET_ADDR_FMT ", len=0x%x, num=%u",
 							breakpoint->address,
 							breakpoint->length, breakpoint->number);
 		}
@@ -4005,7 +3958,7 @@ static int handle_bp_command_set(struct command_invocation *cmd,
 
 	} else if (addr == 0) {
 		if (!target->type->add_context_breakpoint) {
-			LOG_ERROR("Context breakpoint not available");
+			LOG_TARGET_ERROR(target, "Context breakpoint not available");
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 		}
 		retval = context_breakpoint_add(target, asid, length, hw);
@@ -4015,7 +3968,7 @@ static int handle_bp_command_set(struct command_invocation *cmd,
 
 	} else {
 		if (!target->type->add_hybrid_breakpoint) {
-			LOG_ERROR("Hybrid breakpoint not available");
+			LOG_TARGET_ERROR(target, "Hybrid breakpoint not available");
 			return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 		}
 		retval = hybrid_breakpoint_add(target, addr, asid, length, hw);
@@ -4072,21 +4025,31 @@ COMMAND_HANDLER(handle_bp_command)
 
 COMMAND_HANDLER(handle_rbp_command)
 {
+	int retval;
+
 	if (CMD_ARGC != 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	struct target *target = get_current_target(CMD_CTX);
 
 	if (!strcmp(CMD_ARGV[0], "all")) {
-		breakpoint_remove_all(target);
+		retval = breakpoint_remove_all(target);
+
+		if (retval != ERROR_OK) {
+			command_print(CMD, "Error encountered during removal of all breakpoints.");
+			command_print(CMD, "Some breakpoints may have remained set.");
+		}
 	} else {
 		target_addr_t addr;
 		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
 
-		breakpoint_remove(target, addr);
+		retval = breakpoint_remove(target, addr);
+
+		if (retval != ERROR_OK)
+			command_print(CMD, "Error during removal of breakpoint at address " TARGET_ADDR_FMT, addr);
 	}
 
-	return ERROR_OK;
+	return retval;
 }
 
 COMMAND_HANDLER(handle_wp_command)
@@ -4097,13 +4060,14 @@ COMMAND_HANDLER(handle_wp_command)
 		struct watchpoint *watchpoint = target->watchpoints;
 
 		while (watchpoint) {
+			char wp_type = (watchpoint->rw == WPT_READ ? 'r' : (watchpoint->rw == WPT_WRITE ? 'w' : 'a'));
 			command_print(CMD, "address: " TARGET_ADDR_FMT
 					", len: 0x%8.8" PRIx32
-					", r/w/a: %i, value: 0x%8.8" PRIx32
-					", mask: 0x%8.8" PRIx32,
+					", r/w/a: %c, value: 0x%8.8" PRIx64
+					", mask: 0x%8.8" PRIx64,
 					watchpoint->address,
 					watchpoint->length,
-					(int)watchpoint->rw,
+					wp_type,
 					watchpoint->value,
 					watchpoint->mask);
 			watchpoint = watchpoint->next;
@@ -4114,15 +4078,20 @@ COMMAND_HANDLER(handle_wp_command)
 	enum watchpoint_rw type = WPT_ACCESS;
 	target_addr_t addr = 0;
 	uint32_t length = 0;
-	uint32_t data_value = 0x0;
-	uint32_t data_mask = 0xffffffff;
+	uint64_t data_value = 0x0;
+	uint64_t data_mask = WATCHPOINT_IGNORE_DATA_VALUE_MASK;
+	bool mask_specified = false;
 
 	switch (CMD_ARGC) {
 	case 5:
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[4], data_mask);
+		COMMAND_PARSE_NUMBER(u64, CMD_ARGV[4], data_mask);
+		mask_specified = true;
 		/* fall through */
 	case 4:
-		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[3], data_value);
+		COMMAND_PARSE_NUMBER(u64, CMD_ARGV[3], data_value);
+		// if user specified only data value without mask - the mask should be 0
+		if (!mask_specified)
+			data_mask = 0;
 		/* fall through */
 	case 3:
 		switch (CMD_ARGV[2][0]) {
@@ -4136,7 +4105,7 @@ COMMAND_HANDLER(handle_wp_command)
 			type = WPT_ACCESS;
 			break;
 		default:
-			LOG_ERROR("invalid watchpoint mode ('%c')", CMD_ARGV[2][0]);
+			LOG_TARGET_ERROR(target, "invalid watchpoint mode ('%c')", CMD_ARGV[2][0]);
 			return ERROR_COMMAND_SYNTAX_ERROR;
 		}
 		/* fall through */
@@ -4152,23 +4121,37 @@ COMMAND_HANDLER(handle_wp_command)
 	int retval = watchpoint_add(target, addr, length, type,
 			data_value, data_mask);
 	if (retval != ERROR_OK)
-		LOG_ERROR("Failure setting watchpoints");
+		LOG_TARGET_ERROR(target, "Failure setting watchpoints");
 
 	return retval;
 }
 
 COMMAND_HANDLER(handle_rwp_command)
 {
+	int retval;
+
 	if (CMD_ARGC != 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	target_addr_t addr;
-	COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
-
 	struct target *target = get_current_target(CMD_CTX);
-	watchpoint_remove(target, addr);
+	if (!strcmp(CMD_ARGV[0], "all")) {
+		retval = watchpoint_remove_all(target);
 
-	return ERROR_OK;
+		if (retval != ERROR_OK) {
+			command_print(CMD, "Error encountered during removal of all watchpoints.");
+			command_print(CMD, "Some watchpoints may have remained set.");
+		}
+	} else {
+		target_addr_t addr;
+		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
+
+		retval = watchpoint_remove(target, addr);
+
+		if (retval != ERROR_OK)
+			command_print(CMD, "Error during removal of watchpoint at address " TARGET_ADDR_FMT, addr);
+	}
+
+	return retval;
 }
 
 /**
@@ -4331,7 +4314,7 @@ COMMAND_HANDLER(handle_profile_command)
 	if ((CMD_ARGC != 2) && (CMD_ARGC != 4))
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	const uint32_t MAX_PROFILE_SAMPLE_NUM = 10000;
+	const uint32_t MAX_PROFILE_SAMPLE_NUM = 1000000;
 	uint32_t offset;
 	uint32_t num_of_samples;
 	int retval = ERROR_OK;
@@ -4412,243 +4395,36 @@ COMMAND_HANDLER(handle_profile_command)
 	return retval;
 }
 
-static int new_u64_array_element(Jim_Interp *interp, const char *varname, int idx, uint64_t val)
-{
-	char *namebuf;
-	Jim_Obj *obj_name, *obj_val;
-	int result;
-
-	namebuf = alloc_printf("%s(%d)", varname, idx);
-	if (!namebuf)
-		return JIM_ERR;
-
-	obj_name = Jim_NewStringObj(interp, namebuf, -1);
-	jim_wide wide_val = val;
-	obj_val = Jim_NewWideObj(interp, wide_val);
-	if (!obj_name || !obj_val) {
-		free(namebuf);
-		return JIM_ERR;
-	}
-
-	Jim_IncrRefCount(obj_name);
-	Jim_IncrRefCount(obj_val);
-	result = Jim_SetVariable(interp, obj_name, obj_val);
-	Jim_DecrRefCount(interp, obj_name);
-	Jim_DecrRefCount(interp, obj_val);
-	free(namebuf);
-	/* printf("%s(%d) <= 0%08x\n", varname, idx, val); */
-	return result;
-}
-
-static int target_mem2array(Jim_Interp *interp, struct target *target, int argc, Jim_Obj *const *argv)
-{
-	int e;
-
-	LOG_WARNING("DEPRECATED! use 'read_memory' not 'mem2array'");
-
-	/* argv[0] = name of array to receive the data
-	 * argv[1] = desired element width in bits
-	 * argv[2] = memory address
-	 * argv[3] = count of times to read
-	 * argv[4] = optional "phys"
-	 */
-	if (argc < 4 || argc > 5) {
-		Jim_WrongNumArgs(interp, 0, argv, "varname width addr nelems [phys]");
-		return JIM_ERR;
-	}
-
-	/* Arg 0: Name of the array variable */
-	const char *varname = Jim_GetString(argv[0], NULL);
-
-	/* Arg 1: Bit width of one element */
-	long l;
-	e = Jim_GetLong(interp, argv[1], &l);
-	if (e != JIM_OK)
-		return e;
-	const unsigned int width_bits = l;
-
-	if (width_bits != 8 &&
-			width_bits != 16 &&
-			width_bits != 32 &&
-			width_bits != 64) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"Invalid width param. Must be one of: 8, 16, 32 or 64.", NULL);
-		return JIM_ERR;
-	}
-	const unsigned int width = width_bits / 8;
-
-	/* Arg 2: Memory address */
-	jim_wide wide_addr;
-	e = Jim_GetWide(interp, argv[2], &wide_addr);
-	if (e != JIM_OK)
-		return e;
-	target_addr_t addr = (target_addr_t)wide_addr;
-
-	/* Arg 3: Number of elements to read */
-	e = Jim_GetLong(interp, argv[3], &l);
-	if (e != JIM_OK)
-		return e;
-	size_t len = l;
-
-	/* Arg 4: phys */
-	bool is_phys = false;
-	if (argc > 4) {
-		int str_len = 0;
-		const char *phys = Jim_GetString(argv[4], &str_len);
-		if (!strncmp(phys, "phys", str_len))
-			is_phys = true;
-		else
-			return JIM_ERR;
-	}
-
-	/* Argument checks */
-	if (len == 0) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp), "mem2array: zero width read?", NULL);
-		return JIM_ERR;
-	}
-	if ((addr + (len * width)) < addr) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp), "mem2array: addr + len - wraps to zero?", NULL);
-		return JIM_ERR;
-	}
-	if (len > 65536) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"mem2array: too large read request, exceeds 64K items", NULL);
-		return JIM_ERR;
-	}
-
-	if ((width == 1) ||
-		((width == 2) && ((addr & 1) == 0)) ||
-		((width == 4) && ((addr & 3) == 0)) ||
-		((width == 8) && ((addr & 7) == 0))) {
-		/* alignment correct */
-	} else {
-		char buf[100];
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		sprintf(buf, "mem2array address: " TARGET_ADDR_FMT " is not aligned for %" PRIu32 " byte reads",
-				addr,
-				width);
-		Jim_AppendStrings(interp, Jim_GetResult(interp), buf, NULL);
-		return JIM_ERR;
-	}
-
-	/* Transfer loop */
-
-	/* index counter */
-	size_t idx = 0;
-
-	const size_t buffersize = 4096;
-	uint8_t *buffer = malloc(buffersize);
-	if (!buffer)
-		return JIM_ERR;
-
-	/* assume ok */
-	e = JIM_OK;
-	while (len) {
-		/* Slurp... in buffer size chunks */
-		const unsigned int max_chunk_len = buffersize / width;
-		const size_t chunk_len = MIN(len, max_chunk_len); /* in elements.. */
-
-		int retval;
-		if (is_phys)
-			retval = target_read_phys_memory(target, addr, width, chunk_len, buffer);
-		else
-			retval = target_read_memory(target, addr, width, chunk_len, buffer);
-		if (retval != ERROR_OK) {
-			/* BOO !*/
-			LOG_ERROR("mem2array: Read @ " TARGET_ADDR_FMT ", w=%u, cnt=%zu, failed",
-					  addr,
-					  width,
-					  chunk_len);
-			Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-			Jim_AppendStrings(interp, Jim_GetResult(interp), "mem2array: cannot read memory", NULL);
-			e = JIM_ERR;
-			break;
-		} else {
-			for (size_t i = 0; i < chunk_len ; i++, idx++) {
-				uint64_t v = 0;
-				switch (width) {
-					case 8:
-						v = target_buffer_get_u64(target, &buffer[i*width]);
-						break;
-					case 4:
-						v = target_buffer_get_u32(target, &buffer[i*width]);
-						break;
-					case 2:
-						v = target_buffer_get_u16(target, &buffer[i*width]);
-						break;
-					case 1:
-						v = buffer[i] & 0x0ff;
-						break;
-				}
-				new_u64_array_element(interp, varname, idx, v);
-			}
-			len -= chunk_len;
-			addr += chunk_len * width;
-		}
-	}
-
-	free(buffer);
-
-	Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-
-	return e;
-}
-
-static int target_jim_read_memory(Jim_Interp *interp, int argc,
-		Jim_Obj * const *argv)
+COMMAND_HANDLER(handle_target_read_memory)
 {
 	/*
-	 * argv[1] = memory address
-	 * argv[2] = desired element width in bits
-	 * argv[3] = number of elements to read
-	 * argv[4] = optional "phys"
+	 * CMD_ARGV[0] = memory address
+	 * CMD_ARGV[1] = desired element width in bits
+	 * CMD_ARGV[2] = number of elements to read
+	 * CMD_ARGV[3] = optional "phys"
 	 */
 
-	if (argc < 4 || argc > 5) {
-		Jim_WrongNumArgs(interp, 1, argv, "address width count ['phys']");
-		return JIM_ERR;
-	}
+	if (CMD_ARGC < 3 || CMD_ARGC > 4)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	/* Arg 1: Memory address. */
-	jim_wide wide_addr;
-	int e;
-	e = Jim_GetWide(interp, argv[1], &wide_addr);
-
-	if (e != JIM_OK)
-		return e;
-
-	target_addr_t addr = (target_addr_t)wide_addr;
+	target_addr_t addr;
+	COMMAND_PARSE_NUMBER(u64, CMD_ARGV[0], addr);
 
 	/* Arg 2: Bit width of one element. */
-	long l;
-	e = Jim_GetLong(interp, argv[2], &l);
-
-	if (e != JIM_OK)
-		return e;
-
-	const unsigned int width_bits = l;
+	unsigned int width_bits;
+	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], width_bits);
 
 	/* Arg 3: Number of elements to read. */
-	e = Jim_GetLong(interp, argv[3], &l);
-
-	if (e != JIM_OK)
-		return e;
-
-	size_t count = l;
+	unsigned int count;
+	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[2], count);
 
 	/* Arg 4: Optional 'phys'. */
 	bool is_phys = false;
-
-	if (argc > 4) {
-		const char *phys = Jim_GetString(argv[4], NULL);
-
-		if (strcmp(phys, "phys")) {
-			Jim_SetResultFormatted(interp, "invalid argument '%s', must be 'phys'", phys);
-			return JIM_ERR;
+	if (CMD_ARGC == 4) {
+		if (strcmp(CMD_ARGV[3], "phys")) {
+			command_print(CMD, "invalid argument '%s', must be 'phys'", CMD_ARGV[3]);
+			return ERROR_COMMAND_ARGUMENT_INVALID;
 		}
 
 		is_phys = true;
@@ -4661,37 +4437,33 @@ static int target_jim_read_memory(Jim_Interp *interp, int argc,
 	case 64:
 		break;
 	default:
-		Jim_SetResultString(interp, "invalid width, must be 8, 16, 32 or 64", -1);
-		return JIM_ERR;
+		command_print(CMD, "invalid width, must be 8, 16, 32 or 64");
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
 	const unsigned int width = width_bits / 8;
 
 	if ((addr + (count * width)) < addr) {
-		Jim_SetResultString(interp, "read_memory: addr + count wraps to zero", -1);
-		return JIM_ERR;
+		command_print(CMD, "read_memory: addr + count wraps to zero");
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
 	if (count > 65536) {
-		Jim_SetResultString(interp, "read_memory: too large read request, exeeds 64K elements", -1);
-		return JIM_ERR;
+		command_print(CMD, "read_memory: too large read request, exceeds 64K elements");
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx != NULL);
-	struct target *target = get_current_target(cmd_ctx);
+	struct target *target = get_current_target(CMD_CTX);
 
 	const size_t buffersize = 4096;
 	uint8_t *buffer = malloc(buffersize);
 
 	if (!buffer) {
 		LOG_ERROR("Failed to allocate memory");
-		return JIM_ERR;
+		return ERROR_FAIL;
 	}
 
-	Jim_Obj *result_list = Jim_NewListObj(interp, NULL, 0);
-	Jim_IncrRefCount(result_list);
-
+	char *separator = "";
 	while (count > 0) {
 		const unsigned int max_chunk_len = buffersize / width;
 		const size_t chunk_len = MIN(count, max_chunk_len);
@@ -4704,11 +4476,15 @@ static int target_jim_read_memory(Jim_Interp *interp, int argc,
 			retval = target_read_memory(target, addr, width, chunk_len, buffer);
 
 		if (retval != ERROR_OK) {
-			LOG_ERROR("read_memory: read at " TARGET_ADDR_FMT " with width=%u and count=%zu failed",
+			LOG_DEBUG("read_memory: read at " TARGET_ADDR_FMT " with width=%u and count=%zu failed",
 				addr, width_bits, chunk_len);
-			Jim_SetResultString(interp, "read_memory: failed to read memory", -1);
-			e = JIM_ERR;
-			break;
+			/*
+			 * FIXME: we append the errmsg to the list of value already read.
+			 * Add a way to flush and replace old output, but LOG_DEBUG() it
+			 */
+			command_print(CMD, "read_memory: failed to read memory");
+			free(buffer);
+			return retval;
 		}
 
 		for (size_t i = 0; i < chunk_len ; i++) {
@@ -4729,11 +4505,8 @@ static int target_jim_read_memory(Jim_Interp *interp, int argc,
 				break;
 			}
 
-			char value_buf[19];
-			snprintf(value_buf, sizeof(value_buf), "0x%" PRIx64, v);
-
-			Jim_ListAppendElement(interp, result_list,
-				Jim_NewStringObj(interp, value_buf, -1));
+			command_print_sameline(CMD, "%s0x%" PRIx64, separator, v);
+			separator = " ";
 		}
 
 		count -= chunk_len;
@@ -4742,210 +4515,7 @@ static int target_jim_read_memory(Jim_Interp *interp, int argc,
 
 	free(buffer);
 
-	if (e != JIM_OK) {
-		Jim_DecrRefCount(interp, result_list);
-		return e;
-	}
-
-	Jim_SetResult(interp, result_list);
-	Jim_DecrRefCount(interp, result_list);
-
-	return JIM_OK;
-}
-
-static int get_u64_array_element(Jim_Interp *interp, const char *varname, size_t idx, uint64_t *val)
-{
-	char *namebuf = alloc_printf("%s(%zu)", varname, idx);
-	if (!namebuf)
-		return JIM_ERR;
-
-	Jim_Obj *obj_name = Jim_NewStringObj(interp, namebuf, -1);
-	if (!obj_name) {
-		free(namebuf);
-		return JIM_ERR;
-	}
-
-	Jim_IncrRefCount(obj_name);
-	Jim_Obj *obj_val = Jim_GetVariable(interp, obj_name, JIM_ERRMSG);
-	Jim_DecrRefCount(interp, obj_name);
-	free(namebuf);
-	if (!obj_val)
-		return JIM_ERR;
-
-	jim_wide wide_val;
-	int result = Jim_GetWide(interp, obj_val, &wide_val);
-	*val = wide_val;
-	return result;
-}
-
-static int target_array2mem(Jim_Interp *interp, struct target *target,
-		int argc, Jim_Obj *const *argv)
-{
-	int e;
-
-	LOG_WARNING("DEPRECATED! use 'write_memory' not 'array2mem'");
-
-	/* argv[0] = name of array from which to read the data
-	 * argv[1] = desired element width in bits
-	 * argv[2] = memory address
-	 * argv[3] = number of elements to write
-	 * argv[4] = optional "phys"
-	 */
-	if (argc < 4 || argc > 5) {
-		Jim_WrongNumArgs(interp, 0, argv, "varname width addr nelems [phys]");
-		return JIM_ERR;
-	}
-
-	/* Arg 0: Name of the array variable */
-	const char *varname = Jim_GetString(argv[0], NULL);
-
-	/* Arg 1: Bit width of one element */
-	long l;
-	e = Jim_GetLong(interp, argv[1], &l);
-	if (e != JIM_OK)
-		return e;
-	const unsigned int width_bits = l;
-
-	if (width_bits != 8 &&
-			width_bits != 16 &&
-			width_bits != 32 &&
-			width_bits != 64) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"Invalid width param. Must be one of: 8, 16, 32 or 64.", NULL);
-		return JIM_ERR;
-	}
-	const unsigned int width = width_bits / 8;
-
-	/* Arg 2: Memory address */
-	jim_wide wide_addr;
-	e = Jim_GetWide(interp, argv[2], &wide_addr);
-	if (e != JIM_OK)
-		return e;
-	target_addr_t addr = (target_addr_t)wide_addr;
-
-	/* Arg 3: Number of elements to write */
-	e = Jim_GetLong(interp, argv[3], &l);
-	if (e != JIM_OK)
-		return e;
-	size_t len = l;
-
-	/* Arg 4: Phys */
-	bool is_phys = false;
-	if (argc > 4) {
-		int str_len = 0;
-		const char *phys = Jim_GetString(argv[4], &str_len);
-		if (!strncmp(phys, "phys", str_len))
-			is_phys = true;
-		else
-			return JIM_ERR;
-	}
-
-	/* Argument checks */
-	if (len == 0) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"array2mem: zero width read?", NULL);
-		return JIM_ERR;
-	}
-
-	if ((addr + (len * width)) < addr) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"array2mem: addr + len - wraps to zero?", NULL);
-		return JIM_ERR;
-	}
-
-	if (len > 65536) {
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		Jim_AppendStrings(interp, Jim_GetResult(interp),
-				"array2mem: too large memory write request, exceeds 64K items", NULL);
-		return JIM_ERR;
-	}
-
-	if ((width == 1) ||
-		((width == 2) && ((addr & 1) == 0)) ||
-		((width == 4) && ((addr & 3) == 0)) ||
-		((width == 8) && ((addr & 7) == 0))) {
-		/* alignment correct */
-	} else {
-		char buf[100];
-		Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-		sprintf(buf, "array2mem address: " TARGET_ADDR_FMT " is not aligned for %" PRIu32 " byte reads",
-				addr,
-				width);
-		Jim_AppendStrings(interp, Jim_GetResult(interp), buf, NULL);
-		return JIM_ERR;
-	}
-
-	/* Transfer loop */
-
-	/* assume ok */
-	e = JIM_OK;
-
-	const size_t buffersize = 4096;
-	uint8_t *buffer = malloc(buffersize);
-	if (!buffer)
-		return JIM_ERR;
-
-	/* index counter */
-	size_t idx = 0;
-
-	while (len) {
-		/* Slurp... in buffer size chunks */
-		const unsigned int max_chunk_len = buffersize / width;
-
-		const size_t chunk_len = MIN(len, max_chunk_len); /* in elements.. */
-
-		/* Fill the buffer */
-		for (size_t i = 0; i < chunk_len; i++, idx++) {
-			uint64_t v = 0;
-			if (get_u64_array_element(interp, varname, idx, &v) != JIM_OK) {
-				free(buffer);
-				return JIM_ERR;
-			}
-			switch (width) {
-			case 8:
-				target_buffer_set_u64(target, &buffer[i * width], v);
-				break;
-			case 4:
-				target_buffer_set_u32(target, &buffer[i * width], v);
-				break;
-			case 2:
-				target_buffer_set_u16(target, &buffer[i * width], v);
-				break;
-			case 1:
-				buffer[i] = v & 0x0ff;
-				break;
-			}
-		}
-		len -= chunk_len;
-
-		/* Write the buffer to memory */
-		int retval;
-		if (is_phys)
-			retval = target_write_phys_memory(target, addr, width, chunk_len, buffer);
-		else
-			retval = target_write_memory(target, addr, width, chunk_len, buffer);
-		if (retval != ERROR_OK) {
-			/* BOO !*/
-			LOG_ERROR("array2mem: Write @ " TARGET_ADDR_FMT ", w=%u, cnt=%zu, failed",
-					  addr,
-					  width,
-					  chunk_len);
-			Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-			Jim_AppendStrings(interp, Jim_GetResult(interp), "array2mem: cannot read memory", NULL);
-			e = JIM_ERR;
-			break;
-		}
-		addr += chunk_len * width;
-	}
-
-	free(buffer);
-
-	Jim_SetResult(interp, Jim_NewEmptyStringObj(interp));
-
-	return e;
+	return ERROR_OK;
 }
 
 static int target_jim_write_memory(Jim_Interp *interp, int argc,
@@ -5096,8 +4666,7 @@ void target_handle_event(struct target *target, enum target_event e)
 
 	for (teap = target->event_action; teap; teap = teap->next) {
 		if (teap->event == e) {
-			LOG_DEBUG("target(%d): %s (%s) event: %d (%s) action: %s",
-					   target->target_number,
+			LOG_DEBUG("target: %s (%s) event: %d (%s) action: %s",
 					   target_name(target),
 					   target_type_name(target),
 					   e,
@@ -5185,7 +4754,7 @@ static int target_jim_get_reg(Jim_Interp *interp, int argc,
 			return JIM_ERR;
 		}
 
-		if (force) {
+		if (force || !reg->valid) {
 			int retval = reg->type->get(reg);
 
 			if (retval != ERROR_OK) {
@@ -5284,7 +4853,7 @@ static int target_jim_set_reg(Jim_Interp *interp, int argc,
 /**
  * Returns true only if the target has a handler for the specified event.
  */
-bool target_has_event_action(struct target *target, enum target_event event)
+bool target_has_event_action(const struct target *target, enum target_event event)
 {
 	struct target_event_action *teap;
 
@@ -5516,13 +5085,13 @@ no_params:
 				e = jim_getopt_wide(goi, &w);
 				if (e != JIM_OK)
 					return e;
-				/* make this exactly 1 or 0 */
-				target->backup_working_area = (!!w);
+				/* make this boolean */
+				target->backup_working_area = (w != 0);
 			} else {
 				if (goi->argc != 0)
 					goto no_params;
 			}
-			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->backup_working_area));
+			Jim_SetResult(goi->interp, Jim_NewIntObj(goi->interp, target->backup_working_area ? 1 : 0));
 			/* loop for more e*/
 			break;
 
@@ -5685,167 +5254,117 @@ static int jim_target_configure(Jim_Interp *interp, int argc, Jim_Obj * const *a
 	return target_configure(&goi, target);
 }
 
-static int jim_target_mem2array(Jim_Interp *interp,
-		int argc, Jim_Obj *const *argv)
-{
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	return target_mem2array(interp, target, argc - 1, argv + 1);
-}
-
-static int jim_target_array2mem(Jim_Interp *interp,
-		int argc, Jim_Obj *const *argv)
-{
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	return target_array2mem(interp, target, argc - 1, argv + 1);
-}
-
-static int jim_target_tap_disabled(Jim_Interp *interp)
-{
-	Jim_SetResultFormatted(interp, "[TAP is disabled]");
-	return JIM_ERR;
-}
-
-static int jim_target_examine(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_examine)
 {
 	bool allow_defer = false;
 
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
-	if (goi.argc > 1) {
-		const char *cmd_name = Jim_GetString(argv[0], NULL);
-		Jim_SetResultFormatted(goi.interp,
-				"usage: %s ['allow-defer']", cmd_name);
-		return JIM_ERR;
-	}
-	if (goi.argc > 0 &&
-	    strcmp(Jim_GetString(argv[1], NULL), "allow-defer") == 0) {
-		/* consume it */
-		Jim_Obj *obj;
-		int e = jim_getopt_obj(&goi, &obj);
-		if (e != JIM_OK)
-			return e;
+	if (CMD_ARGC > 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (CMD_ARGC == 1) {
+		if (strcmp(CMD_ARGV[0], "allow-defer"))
+			return ERROR_COMMAND_ARGUMENT_INVALID;
 		allow_defer = true;
 	}
 
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
 
 	if (allow_defer && target->defer_examine) {
 		LOG_INFO("Deferring arp_examine of %s", target_name(target));
 		LOG_INFO("Use arp_examine command to examine it manually!");
-		return JIM_OK;
+		return ERROR_OK;
 	}
 
-	int e = target->type->examine(target);
-	if (e != ERROR_OK) {
+	int retval = target->type->examine(target);
+	if (retval != ERROR_OK) {
 		target_reset_examined(target);
-		return JIM_ERR;
+		return retval;
 	}
 
 	target_set_examined(target);
 
-	return JIM_OK;
+	return ERROR_OK;
 }
 
-static int jim_target_was_examined(Jim_Interp *interp, int argc, Jim_Obj * const *argv)
+COMMAND_HANDLER(handle_target_was_examined)
 {
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	Jim_SetResultBool(interp, target_was_examined(target));
-	return JIM_OK;
+	struct target *target = get_current_target(CMD_CTX);
+
+	command_print(CMD, "%d", target_was_examined(target) ? 1 : 0);
+
+	return ERROR_OK;
 }
 
-static int jim_target_examine_deferred(Jim_Interp *interp, int argc, Jim_Obj * const *argv)
+COMMAND_HANDLER(handle_target_examine_deferred)
 {
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	Jim_SetResultBool(interp, target->defer_examine);
-	return JIM_OK;
+	struct target *target = get_current_target(CMD_CTX);
+
+	command_print(CMD, "%d", target->defer_examine ? 1 : 0);
+
+	return ERROR_OK;
 }
 
-static int jim_target_halt_gdb(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_halt_gdb)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+
+	return target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT);
+}
+
+COMMAND_HANDLER(handle_target_poll)
+{
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
 	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
 
-	if (target_call_event_callbacks(target, TARGET_EVENT_GDB_HALT) != ERROR_OK)
-		return JIM_ERR;
-
-	return JIM_OK;
-}
-
-static int jim_target_poll(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
-{
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
-	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
-
-	int e;
 	if (!(target_was_examined(target)))
-		e = ERROR_TARGET_NOT_EXAMINED;
-	else
-		e = target->type->poll(target);
-	if (e != ERROR_OK)
-		return JIM_ERR;
-	return JIM_OK;
+		return ERROR_TARGET_NOT_EXAMINED;
+
+	return target->type->poll(target);
 }
 
-static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_reset)
 {
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
+	if (CMD_ARGC != 2)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	if (goi.argc != 2) {
-		Jim_WrongNumArgs(interp, 0, argv,
-				"([tT]|[fF]|assert|deassert) BOOL");
-		return JIM_ERR;
+	const struct nvp *n = nvp_name2value(nvp_assert, CMD_ARGV[0]);
+	if (!n->name) {
+		nvp_unknown_command_print(CMD, nvp_assert, NULL, CMD_ARGV[0]);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	struct jim_nvp *n;
-	int e = jim_getopt_nvp(&goi, nvp_assert, &n);
-	if (e != JIM_OK) {
-		jim_getopt_nvp_unknown(&goi, nvp_assert, 1);
-		return e;
-	}
 	/* the halt or not param */
-	jim_wide a;
-	e = jim_getopt_wide(&goi, &a);
-	if (e != JIM_OK)
-		return e;
+	int a;
+	COMMAND_PARSE_NUMBER(int, CMD_ARGV[1], a);
 
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
 
 	if (!target->type->assert_reset || !target->type->deassert_reset) {
-		Jim_SetResultFormatted(interp,
-				"No target-specific reset for %s",
-				target_name(target));
-		return JIM_ERR;
+		command_print(CMD, "No target-specific reset for %s", target_name(target));
+		return ERROR_FAIL;
 	}
 
 	if (target->defer_examine)
@@ -5858,66 +5377,53 @@ static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 
 	/* do the assert */
 	if (n->value == NVP_ASSERT)
-		e = target->type->assert_reset(target);
-	else
-		e = target->type->deassert_reset(target);
-	return (e == ERROR_OK) ? JIM_OK : JIM_ERR;
+		return target->type->assert_reset(target);
+	return target->type->deassert_reset(target);
 }
 
-static int jim_target_halt(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_halt)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
 	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
-	int e = target->type->halt(target);
-	return (e == ERROR_OK) ? JIM_OK : JIM_ERR;
+
+	return target->type->halt(target);
 }
 
-static int jim_target_wait_state(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_wait_state)
 {
-	struct jim_getopt_info goi;
-	jim_getopt_setup(&goi, interp, argc - 1, argv + 1);
+	if (CMD_ARGC != 2)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	/* params:  <name>  statename timeoutmsecs */
-	if (goi.argc != 2) {
-		const char *cmd_name = Jim_GetString(argv[0], NULL);
-		Jim_SetResultFormatted(goi.interp,
-				"%s <state_name> <timeout_in_msec>", cmd_name);
-		return JIM_ERR;
+	const struct nvp *n = nvp_name2value(nvp_target_state, CMD_ARGV[0]);
+	if (!n->name) {
+		nvp_unknown_command_print(CMD, nvp_target_state, NULL, CMD_ARGV[0]);
+		return ERROR_COMMAND_ARGUMENT_INVALID;
 	}
 
-	struct jim_nvp *n;
-	int e = jim_getopt_nvp(&goi, nvp_target_state, &n);
-	if (e != JIM_OK) {
-		jim_getopt_nvp_unknown(&goi, nvp_target_state, 1);
-		return e;
-	}
-	jim_wide a;
-	e = jim_getopt_wide(&goi, &a);
-	if (e != JIM_OK)
-		return e;
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	if (!target->tap->enabled)
-		return jim_target_tap_disabled(interp);
+	unsigned int a;
+	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], a);
 
-	e = target_wait_state(target, n->value, a);
-	if (e != ERROR_OK) {
-		Jim_Obj *obj = Jim_NewIntObj(interp, e);
-		Jim_SetResultFormatted(goi.interp,
-				"target: %s wait %s fails (%#s) %s",
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target->tap->enabled) {
+		command_print(CMD, "[TAP is disabled]");
+		return ERROR_FAIL;
+	}
+
+	int retval = target_wait_state(target, n->value, a);
+	if (retval != ERROR_OK) {
+		command_print(CMD,
+				"target: %s wait %s fails (%d) %s",
 				target_name(target), n->name,
-				obj, target_strerror_safe(e));
-		return JIM_ERR;
+				retval, target_strerror_safe(retval));
+		return retval;
 	}
-	return JIM_OK;
+	return ERROR_OK;
 }
 /* List for human, Events defined for this target.
  * scripts/programs should use 'name cget -event NAME'
@@ -5927,8 +5433,7 @@ COMMAND_HANDLER(handle_target_event_list)
 	struct target *target = get_current_target(CMD_CTX);
 	struct target_event_action *teap = target->event_action;
 
-	command_print(CMD, "Event actions for target (%d) %s\n",
-				   target->target_number,
+	command_print(CMD, "Event actions for target %s\n",
 				   target_name(target));
 	command_print(CMD, "%-25s | Body", "Event");
 	command_print(CMD, "------------------------- | "
@@ -5942,18 +5447,41 @@ COMMAND_HANDLER(handle_target_event_list)
 	command_print(CMD, "***END***");
 	return ERROR_OK;
 }
-static int jim_target_current_state(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+
+COMMAND_HANDLER(handle_target_current_state)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "[no parameters]");
-		return JIM_ERR;
-	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
-	struct target *target = get_current_target(cmd_ctx);
-	Jim_SetResultString(interp, target_state_name(target), -1);
-	return JIM_OK;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+
+	command_print(CMD, "%s", target_state_name(target));
+
+	return ERROR_OK;
 }
+
+COMMAND_HANDLER(handle_target_debug_reason)
+{
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct target *target = get_current_target(CMD_CTX);
+
+
+	const char *debug_reason = nvp_value2name(nvp_target_debug_reason,
+		target->debug_reason)->name;
+
+	if (!debug_reason) {
+		command_print(CMD, "bug: invalid debug reason (%d)",
+			target->debug_reason);
+		return ERROR_FAIL;
+	}
+
+	command_print(CMD, "%s", debug_reason);
+
+	return ERROR_OK;
+}
+
 static int jim_target_invoke_event(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
 	struct jim_getopt_info goi;
@@ -6048,22 +5576,6 @@ static const struct command_registration target_instance_command_handlers[] = {
 		.usage = "address [count]",
 	},
 	{
-		.name = "array2mem",
-		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_array2mem,
-		.help = "Writes Tcl array of 8/16/32 bit numbers "
-			"to target memory",
-		.usage = "arrayname bitwidth address count",
-	},
-	{
-		.name = "mem2array",
-		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_mem2array,
-		.help = "Loads Tcl array of 8/16/32 bit numbers "
-			"from target memory",
-		.usage = "arrayname bitwidth address count",
-	},
-	{
 		.name = "get_reg",
 		.mode = COMMAND_EXEC,
 		.jim_handler = target_jim_get_reg,
@@ -6080,7 +5592,7 @@ static const struct command_registration target_instance_command_handlers[] = {
 	{
 		.name = "read_memory",
 		.mode = COMMAND_EXEC,
-		.jim_handler = target_jim_read_memory,
+		.handler = handle_target_read_memory,
 		.help = "Read Tcl list of 8/16/32/64 bit numbers from target memory",
 		.usage = "address width count ['phys']",
 	},
@@ -6101,57 +5613,72 @@ static const struct command_registration target_instance_command_handlers[] = {
 	{
 		.name = "curstate",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_current_state,
+		.handler = handle_target_current_state,
 		.help = "displays the current state of this target",
+		.usage = "",
+	},
+	{
+		.name = "debug_reason",
+		.mode = COMMAND_EXEC,
+		.handler = handle_target_debug_reason,
+		.help = "displays the debug reason of this target",
+		.usage = "",
 	},
 	{
 		.name = "arp_examine",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_examine,
+		.handler = handle_target_examine,
 		.help = "used internally for reset processing",
 		.usage = "['allow-defer']",
 	},
 	{
 		.name = "was_examined",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_was_examined,
+		.handler = handle_target_was_examined,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "examine_deferred",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_examine_deferred,
+		.handler = handle_target_examine_deferred,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "arp_halt_gdb",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_halt_gdb,
+		.handler = handle_target_halt_gdb,
 		.help = "used internally for reset processing to halt GDB",
+		.usage = "",
 	},
 	{
 		.name = "arp_poll",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_poll,
+		.handler = handle_target_poll,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "arp_reset",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_reset,
+		.handler = handle_target_reset,
 		.help = "used internally for reset processing",
+		.usage = "'assert'|'deassert' halt",
 	},
 	{
 		.name = "arp_halt",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_halt,
+		.handler = handle_target_halt,
 		.help = "used internally for reset processing",
+		.usage = "",
 	},
 	{
 		.name = "arp_waitstate",
 		.mode = COMMAND_EXEC,
-		.jim_handler = jim_target_wait_state,
+		.handler = handle_target_wait_state,
 		.help = "used internally for reset processing",
+		.usage = "statename timeoutmsecs",
 	},
 	{
 		.name = "invoke-event",
@@ -6196,7 +5723,7 @@ static int target_create(struct jim_getopt_info *goi)
 	if (e != JIM_OK)
 		return e;
 	struct transport *tr = get_current_transport();
-	if (tr->override_target) {
+	if (tr && tr->override_target) {
 		e = tr->override_target(&cp);
 		if (e != ERROR_OK) {
 			LOG_ERROR("The selected transport doesn't support this target");
@@ -6239,9 +5766,6 @@ static int target_create(struct jim_getopt_info *goi)
 	/* set empty smp cluster */
 	target->smp_targets = &empty_smp_targets;
 
-	/* set target number */
-	target->target_number = new_target_number();
-
 	/* allocate memory for each unique target type */
 	target->type = malloc(sizeof(struct target_type));
 	if (!target->type) {
@@ -6258,7 +5782,7 @@ static int target_create(struct jim_getopt_info *goi)
 	target->working_area        = 0x0;
 	target->working_area_size   = 0x0;
 	target->working_areas       = NULL;
-	target->backup_working_area = 0;
+	target->backup_working_area = false;
 
 	target->state               = TARGET_UNKNOWN;
 	target->debug_reason        = DBG_REASON_UNDEFINED;
@@ -6400,56 +5924,47 @@ static int target_create(struct jim_getopt_info *goi)
 	return JIM_OK;
 }
 
-static int jim_target_current(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_current)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "Too many parameters");
-		return JIM_ERR;
-	}
-	struct command_context *cmd_ctx = current_command_context(interp);
-	assert(cmd_ctx);
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	struct target *target = get_current_target_or_null(cmd_ctx);
+	struct target *target = get_current_target_or_null(CMD_CTX);
 	if (target)
-		Jim_SetResultString(interp, target_name(target), -1);
-	return JIM_OK;
+		command_print(CMD, "%s", target_name(target));
+
+	return ERROR_OK;
 }
 
-static int jim_target_types(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_types)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "Too many parameters");
-		return JIM_ERR;
-	}
-	Jim_SetResult(interp, Jim_NewListObj(interp, NULL, 0));
-	for (unsigned x = 0; target_types[x]; x++) {
-		Jim_ListAppendElement(interp, Jim_GetResult(interp),
-			Jim_NewStringObj(interp, target_types[x]->name, -1));
-	}
-	return JIM_OK;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	for (unsigned int x = 0; target_types[x]; x++)
+		command_print(CMD, "%s", target_types[x]->name);
+
+	return ERROR_OK;
 }
 
-static int jim_target_names(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_names)
 {
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "Too many parameters");
-		return JIM_ERR;
-	}
-	Jim_SetResult(interp, Jim_NewListObj(interp, NULL, 0));
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
 	struct target *target = all_targets;
 	while (target) {
-		Jim_ListAppendElement(interp, Jim_GetResult(interp),
-			Jim_NewStringObj(interp, target_name(target), -1));
+		command_print(CMD, "%s", target_name(target));
 		target = target->next;
 	}
-	return JIM_OK;
+
+	return ERROR_OK;
 }
 
 static struct target_list *
 __attribute__((warn_unused_result))
-create_target_list_node(Jim_Obj *const name) {
-	int len;
-	const char *targetname = Jim_GetString(name, &len);
+create_target_list_node(const char *targetname)
+{
 	struct target *target = get_target(targetname);
 	LOG_DEBUG("%s ", targetname);
 	if (!target)
@@ -6465,7 +5980,8 @@ create_target_list_node(Jim_Obj *const name) {
 	return new;
 }
 
-static int get_target_with_common_rtos_type(struct list_head *lh, struct target **result)
+static int get_target_with_common_rtos_type(struct command_invocation *cmd,
+	struct list_head *lh, struct target **result)
 {
 	struct target *target = NULL;
 	struct target_list *curr;
@@ -6473,39 +5989,39 @@ static int get_target_with_common_rtos_type(struct list_head *lh, struct target 
 		struct rtos *curr_rtos = curr->target->rtos;
 		if (curr_rtos) {
 			if (target && target->rtos && target->rtos->type != curr_rtos->type) {
-				LOG_ERROR("Different rtos types in members of one smp target!");
-				return JIM_ERR;
+				command_print(cmd, "Different rtos types in members of one smp target!");
+				return ERROR_FAIL;
 			}
 			target = curr->target;
 		}
 	}
 	*result = target;
-	return JIM_OK;
+	return ERROR_OK;
 }
 
-static int jim_target_smp(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_target_smp)
 {
 	static int smp_group = 1;
 
-	if (argc == 1) {
+	if (CMD_ARGC == 0) {
 		LOG_DEBUG("Empty SMP target");
-		return JIM_OK;
+		return ERROR_OK;
 	}
-	LOG_DEBUG("%d", argc);
-	/* argv[1] = target to associate in smp
-	 * argv[2] = target to associate in smp
-	 * argv[3] ...
+	LOG_DEBUG("%d", CMD_ARGC);
+	/* CMD_ARGC[0] = target to associate in smp
+	 * CMD_ARGC[1] = target to associate in smp
+	 * CMD_ARGC[2] ...
 	 */
 
 	struct list_head *lh = malloc(sizeof(*lh));
 	if (!lh) {
 		LOG_ERROR("Out of memory");
-		return JIM_ERR;
+		return ERROR_FAIL;
 	}
 	INIT_LIST_HEAD(lh);
 
-	for (int i = 1; i < argc; i++) {
-		struct target_list *new = create_target_list_node(argv[i]);
+	for (unsigned int i = 0; i < CMD_ARGC; i++) {
+		struct target_list *new = create_target_list_node(CMD_ARGV[i]);
 		if (new)
 			list_add_tail(&new->lh, lh);
 	}
@@ -6519,13 +6035,12 @@ static int jim_target_smp(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 	smp_group++;
 
 	struct target *rtos_target;
-	int retval = get_target_with_common_rtos_type(lh, &rtos_target);
-	if (retval == JIM_OK && rtos_target)
+	int retval = get_target_with_common_rtos_type(CMD, lh, &rtos_target);
+	if (retval == ERROR_OK && rtos_target)
 		retval = rtos_smp_init(rtos_target);
 
 	return retval;
 }
-
 
 static int jim_target_create(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
@@ -6557,26 +6072,29 @@ static const struct command_registration target_subcommand_handlers[] = {
 	{
 		.name = "current",
 		.mode = COMMAND_ANY,
-		.jim_handler = jim_target_current,
+		.handler = handle_target_current,
 		.help = "Returns the currently selected target",
+		.usage = "",
 	},
 	{
 		.name = "types",
 		.mode = COMMAND_ANY,
-		.jim_handler = jim_target_types,
+		.handler = handle_target_types,
 		.help = "Returns the available target types as "
 				"a list of strings",
+		.usage = "",
 	},
 	{
 		.name = "names",
 		.mode = COMMAND_ANY,
-		.jim_handler = jim_target_names,
+		.handler = handle_target_names,
 		.help = "Returns the names of all targets as a list of strings",
+		.usage = "",
 	},
 	{
 		.name = "smp",
 		.mode = COMMAND_ANY,
-		.jim_handler = jim_target_smp,
+		.handler = handle_target_smp,
 		.usage = "targetname1 targetname2 ...",
 		.help = "gather several target in a smp list"
 	},
@@ -6778,8 +6296,8 @@ COMMAND_HANDLER(handle_ps_command)
 	struct target *target = get_current_target(CMD_CTX);
 	char *display;
 	if (target->state != TARGET_HALTED) {
-		LOG_INFO("target not halted !!");
-		return ERROR_OK;
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if ((target->rtos) && (target->rtos->type)
@@ -6810,8 +6328,8 @@ COMMAND_HANDLER(handle_test_mem_access_command)
 	int retval = ERROR_OK;
 
 	if (target->state != TARGET_HALTED) {
-		LOG_INFO("target not halted !!");
-		return ERROR_FAIL;
+		command_print(CMD, "Error: [%s] not halted", target_name(target));
+		return ERROR_TARGET_NOT_HALTED;
 	}
 
 	if (CMD_ARGC != 1)
@@ -6991,8 +6509,8 @@ static const struct command_registration target_exec_command_handlers[] = {
 		.mode = COMMAND_ANY,
 		.help = "Load image into server memory for later use by "
 			"fast_load; primarily for profiling",
-		.usage = "filename address ['bin'|'ihex'|'elf'|'s19'] "
-			"[min_address [max_length]]",
+		.usage = "filename [address ['bin'|'ihex'|'elf'|'s19' "
+			"[min_address [max_length]]]]",
 	},
 	{
 		.name = "fast_load",
@@ -7152,21 +6670,21 @@ static const struct command_registration target_exec_command_handlers[] = {
 		.handler = handle_wp_command,
 		.mode = COMMAND_EXEC,
 		.help = "list (no params) or create watchpoints",
-		.usage = "[address length [('r'|'w'|'a') value [mask]]]",
+		.usage = "[address length [('r'|'w'|'a') [value [mask]]]]",
 	},
 	{
 		.name = "rwp",
 		.handler = handle_rwp_command,
 		.mode = COMMAND_EXEC,
 		.help = "remove watchpoint",
-		.usage = "address",
+		.usage = "'all' | address",
 	},
 	{
 		.name = "load_image",
 		.handler = handle_load_image_command,
 		.mode = COMMAND_EXEC,
-		.usage = "filename address ['bin'|'ihex'|'elf'|'s19'] "
-			"[min_address] [max_length]",
+		.usage = "filename [address ['bin'|'ihex'|'elf'|'s19' "
+			"[min_address [max_length]]]]",
 	},
 	{
 		.name = "dump_image",
@@ -7209,7 +6727,7 @@ static const struct command_registration target_exec_command_handlers[] = {
 	{
 		.name = "read_memory",
 		.mode = COMMAND_EXEC,
-		.jim_handler = target_jim_read_memory,
+		.handler = handle_target_read_memory,
 		.help = "Read Tcl list of 8/16/32/64 bit numbers from target memory",
 		.usage = "address width count ['phys']",
 	},
@@ -7258,4 +6776,30 @@ static int target_register_user_commands(struct command_context *cmd_ctx)
 
 
 	return register_commands(cmd_ctx, NULL, target_exec_command_handlers);
+}
+
+const char *target_debug_reason_str(enum target_debug_reason reason)
+{
+	switch (reason) {
+		case DBG_REASON_DBGRQ:
+			return "DBGRQ";
+		case DBG_REASON_BREAKPOINT:
+			return "BREAKPOINT";
+		case DBG_REASON_WATCHPOINT:
+			return "WATCHPOINT";
+		case DBG_REASON_WPTANDBKPT:
+			return "WPTANDBKPT";
+		case DBG_REASON_SINGLESTEP:
+			return "SINGLESTEP";
+		case DBG_REASON_NOTHALTED:
+			return "NOTHALTED";
+		case DBG_REASON_EXIT:
+			return "EXIT";
+		case DBG_REASON_EXC_CATCH:
+			return "EXC_CATCH";
+		case DBG_REASON_UNDEFINED:
+			return "UNDEFINED";
+		default:
+			return "UNKNOWN!";
+	}
 }

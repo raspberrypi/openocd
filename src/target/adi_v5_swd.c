@@ -48,6 +48,8 @@ static bool do_sync;
 
 static struct adiv5_dap *swd_multidrop_selected_dap;
 
+static bool swd_multidrop_in_swd_state;
+
 
 static int swd_queue_dp_write_inner(struct adiv5_dap *dap, unsigned int reg,
 		uint32_t data);
@@ -70,28 +72,11 @@ static void swd_finish_read(struct adiv5_dap *dap)
 	}
 }
 
-static void swd_clear_sticky_errors(struct adiv5_dap *dap)
-{
-	const struct swd_driver *swd = adiv5_dap_swd_driver(dap);
-	assert(swd);
-
-	swd->write_reg(swd_cmd(false, false, DP_ABORT),
-		STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR, 0);
-}
-
 static int swd_run_inner(struct adiv5_dap *dap)
 {
 	const struct swd_driver *swd = adiv5_dap_swd_driver(dap);
-	int retval;
 
-	retval = swd->run();
-
-	if (retval != ERROR_OK) {
-		/* fault response */
-		dap->do_reconnect = true;
-	}
-
-	return retval;
+	return swd->run();
 }
 
 static inline int check_sync(struct adiv5_dap *dap)
@@ -99,27 +84,30 @@ static inline int check_sync(struct adiv5_dap *dap)
 	return do_sync ? swd_run_inner(dap) : ERROR_OK;
 }
 
-/** Select the DP register bank matching bits 7:4 of reg. */
+/** Select the DP register bank */
 static int swd_queue_dp_bankselect(struct adiv5_dap *dap, unsigned int reg)
 {
-	/* Only register address 0 and 4 are banked. */
-	if ((reg & 0xf) > 4)
+	/* Only register address 0 (ADIv6 only) and 4 are banked. */
+	if (is_adiv6(dap) ? (reg & 0xf) > 4 : (reg & 0xf) != 4)
 		return ERROR_OK;
 
-	uint64_t sel = (reg & 0x000000F0) >> 4;
-	if (dap->select != DP_SELECT_INVALID)
-		sel |= dap->select & ~0xfULL;
+	uint32_t sel = (reg >> 4) & DP_SELECT_DPBANK;
 
-	if (sel == dap->select)
+	/* ADIv6 ensures DPBANKSEL = 0 after line reset */
+	if ((dap->select_valid || (is_adiv6(dap) && dap->select_dpbanksel_valid))
+			&& (sel == (dap->select & DP_SELECT_DPBANK)))
 		return ERROR_OK;
 
-	dap->select = sel;
+	/* Use the AP part of dap->select regardless of dap->select_valid:
+	 * if !dap->select_valid
+	 * dap->select contains a speculative value likely going to be used
+	 * in the following swd_queue_ap_bankselect() */
+	sel |= (uint32_t)(dap->select & SELECT_AP_MASK);
 
-	int retval = swd_queue_dp_write_inner(dap, DP_SELECT, (uint32_t)sel);
-	if (retval != ERROR_OK)
-		dap->select = DP_SELECT_INVALID;
+	LOG_DEBUG_IO("DP BANK SELECT: %" PRIx32, sel);
 
-	return retval;
+	/* dap->select cache gets updated in the following call */
+	return swd_queue_dp_write_inner(dap, DP_SELECT, sel);
 }
 
 static int swd_queue_dp_read_inner(struct adiv5_dap *dap, unsigned int reg,
@@ -140,56 +128,73 @@ static int swd_queue_dp_read_inner(struct adiv5_dap *dap, unsigned int reg,
 static int swd_queue_dp_write_inner(struct adiv5_dap *dap, unsigned int reg,
 		uint32_t data)
 {
-	int retval;
+	int retval = ERROR_OK;
 	const struct swd_driver *swd = adiv5_dap_swd_driver(dap);
 	assert(swd);
 
 	swd_finish_read(dap);
 
 	if (reg == DP_SELECT) {
-		dap->select = data & (DP_SELECT_APSEL | DP_SELECT_APBANK | DP_SELECT_DPBANK);
+		dap->select = data | (dap->select & (0xffffffffull << 32));
 
 		swd->write_reg(swd_cmd(false, false, reg), data, 0);
 
 		retval = check_sync(dap);
-		if (retval != ERROR_OK)
-			dap->select = DP_SELECT_INVALID;
+		dap->select_valid = (retval == ERROR_OK);
+		dap->select_dpbanksel_valid = dap->select_valid;
 
 		return retval;
 	}
 
-	retval = swd_queue_dp_bankselect(dap, reg);
-	if (retval != ERROR_OK)
-		return retval;
+	if (reg == DP_SELECT1)
+		dap->select = ((uint64_t)data << 32) | (dap->select & 0xffffffffull);
 
-	swd->write_reg(swd_cmd(false, false, reg), data, 0);
+	/* DP_ABORT write is not banked.
+	 * Prevent writing DP_SELECT before as it would fail on locked up DP */
+	if (reg != DP_ABORT)
+		retval = swd_queue_dp_bankselect(dap, reg);
 
-	return check_sync(dap);
+	if (retval == ERROR_OK) {
+		swd->write_reg(swd_cmd(false, false, reg), data, 0);
+
+		retval = check_sync(dap);
+	}
+
+	if (reg == DP_SELECT1)
+		dap->select1_valid = (retval == ERROR_OK);
+
+	return retval;
 }
 
 
 static int swd_multidrop_select_inner(struct adiv5_dap *dap, uint32_t *dpidr_ptr,
-		uint32_t *dlpidr_ptr, bool clear_sticky)
+		uint32_t *dlpidr_ptr, uint32_t dp_abort)
 {
 	int retval;
 	uint32_t dpidr, dlpidr;
 
 	assert(dap_is_multidrop(dap));
 
-	swd_send_sequence(dap, LINE_RESET);
-	/* From ARM IHI 0074C ADIv6.0, chapter B4.3.3 "Connection and line reset
-	 * sequence":
-	 * - line reset sets DP_SELECT_DPBANK to zero;
-	 * - read of DP_DPIDR takes the connection out of reset;
-	 * - write of DP_TARGETSEL keeps the connection in reset;
-	 * - other accesses return protocol error (SWDIO not driven by target).
-	 *
-	 * Read DP_DPIDR to get out of reset. Initialize dap->select to zero to
-	 * skip the write to DP_SELECT, avoiding the protocol error. Set again
-	 * dap->select to DP_SELECT_INVALID because the rest of the register is
-	 * unknown after line reset.
+	/* Send JTAG_TO_DORMANT and DORMANT_TO_SWD just once
+	 * and then use shorter LINE_RESET until communication fails */
+	if (!swd_multidrop_in_swd_state) {
+		swd_send_sequence(dap, JTAG_TO_DORMANT);
+		swd_send_sequence(dap, DORMANT_TO_SWD);
+	} else {
+		swd_send_sequence(dap, LINE_RESET);
+	}
+
+	/*
+	 * Zero dap->select and set dap->select_dpbanksel_valid
+	 * to skip the write to DP_SELECT before DPIDR read, avoiding
+	 * the protocol error.
+	 * Clear the other validity flags because the rest of the DP
+	 * SELECT and SELECT1 registers is unknown after line reset.
 	 */
 	dap->select = 0;
+	dap->select_dpbanksel_valid = true;
+	dap->select_valid = false;
+	dap->select1_valid = false;
 
 	retval = swd_queue_dp_write_inner(dap, DP_TARGETSEL, dap->multidrop_targetsel);
 	if (retval != ERROR_OK)
@@ -199,17 +204,22 @@ static int swd_multidrop_select_inner(struct adiv5_dap *dap, uint32_t *dpidr_ptr
 	if (retval != ERROR_OK)
 		return retval;
 
-	if (clear_sticky) {
-		/* Clear all sticky errors (including ORUN) */
-		swd_clear_sticky_errors(dap);
-	} else {
-		/* Ideally just clear ORUN flag which is set by reset */
-		retval = swd_queue_dp_write_inner(dap, DP_ABORT, ORUNERRCLR);
+	/* Ideally just clear ORUN flag which is set by reset */
+	if (dp_abort & DAPABORT)
+		LOG_WARNING("Too long SWD WAIT, issuing DAPABORT");
+	else
+		LOG_DEBUG_IO("DP ABORT: clear sticky errors");
+
+	retval = swd_queue_dp_write_inner(dap, DP_ABORT, dp_abort);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (dp_abort & DAPABORT) {
+		/* Run the queue after DAPABORT */
+		retval = swd_run_inner(dap);
 		if (retval != ERROR_OK)
 			return retval;
 	}
-
-	dap->select = DP_SELECT_INVALID;
 
 	retval = swd_queue_dp_read_inner(dap, DP_DLPIDR, &dlpidr);
 	if (retval != ERROR_OK)
@@ -238,6 +248,7 @@ static int swd_multidrop_select_inner(struct adiv5_dap *dap, uint32_t *dpidr_ptr
 
 	LOG_DEBUG_IO("Selected DP_TARGETSEL 0x%08" PRIx32, dap->multidrop_targetsel);
 	swd_multidrop_selected_dap = dap;
+	swd_multidrop_in_swd_state = true;
 
 	if (dpidr_ptr)
 		*dpidr_ptr = dpidr;
@@ -258,24 +269,22 @@ static int swd_multidrop_select(struct adiv5_dap *dap)
 
 	int retval = ERROR_OK;
 	for (unsigned int retry = 0; ; retry++) {
-		bool clear_sticky = retry > 0;
-
-		retval = swd_multidrop_select_inner(dap, NULL, NULL, clear_sticky);
+		retval = swd_multidrop_select_inner(dap, NULL, NULL, ORUNERRCLR);
 		if (retval == ERROR_OK)
 			break;
 
 		swd_multidrop_selected_dap = NULL;
 		if (retry > 3) {
 			LOG_ERROR("Failed to select multidrop %s", adiv5_dap_name(dap));
+			dap->do_reconnect = true;
 			return retval;
 		}
 
 		LOG_DEBUG("Failed to select multidrop %s, retrying...",
 				  adiv5_dap_name(dap));
-		/* we going to retry localy, do not ask for full reconnect */
-		dap->do_reconnect = false;
 	}
 
+	dap->do_reconnect = false;
 	return retval;
 }
 
@@ -285,23 +294,47 @@ static int swd_connect_multidrop(struct adiv5_dap *dap)
 	uint32_t dpidr = 0xdeadbeef;
 	uint32_t dlpidr = 0xdeadbeef;
 	int64_t timeout = timeval_ms() + 500;
+	bool timeout_reached = false;
+	bool send_dapabort = false;
+	bool switch_to_dormant = false;
 
-	do {
-		swd_send_sequence(dap, JTAG_TO_DORMANT);
-		swd_send_sequence(dap, DORMANT_TO_SWD);
+	for (unsigned int retry_after_timeout = 0; ; ) {
+		/* Do not make any assumptions about SWD state in case of reconnect */
+		if (dap->do_reconnect)
+			swd_multidrop_in_swd_state = false;
 
 		/* Clear link state, including the SELECT cache. */
 		dap->do_reconnect = false;
 		dap_invalidate_cache(dap);
 		swd_multidrop_selected_dap = NULL;
 
-		retval = swd_multidrop_select_inner(dap, &dpidr, &dlpidr, true);
+		uint32_t dp_abort = STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR;
+		if (send_dapabort)
+			dp_abort |= DAPABORT;
+
+		retval = swd_multidrop_select_inner(dap, &dpidr, &dlpidr, dp_abort);
 		if (retval == ERROR_OK)
 			break;
 
-		alive_sleep(1);
+		/* Wait gracefully until timeout. Then try more force: DAPABORT */
+		timeout_reached = timeval_ms() > timeout;
+		if (timeout_reached) {
+			retry_after_timeout++;
+			if (retry_after_timeout > 6)
+				break;
 
-	} while (timeval_ms() < timeout);
+			/* Alternate DAPABORT and DORMANT methods to revive stalled DP */
+			send_dapabort = retry_after_timeout & 1;
+			switch_to_dormant = !send_dapabort;
+		}
+
+		alive_sleep((retval == ERROR_WAIT && !timeout_reached) ? 10 : 1);
+
+		swd_multidrop_in_swd_state = false;
+
+		if (switch_to_dormant)
+			swd_send_sequence(dap, SWD_TO_DORMANT);
+	}
 
 	if (retval != ERROR_OK) {
 		swd_multidrop_selected_dap = NULL;
@@ -309,6 +342,7 @@ static int swd_connect_multidrop(struct adiv5_dap *dap)
 		return retval;
 	}
 
+	swd_multidrop_in_swd_state = true;
 	LOG_INFO("SWD DPIDR 0x%08" PRIx32 ", DLPIDR 0x%08" PRIx32,
 			  dpidr, dlpidr);
 
@@ -317,73 +351,168 @@ static int swd_connect_multidrop(struct adiv5_dap *dap)
 
 static int swd_connect_single(struct adiv5_dap *dap)
 {
-	int retval;
-	uint32_t dpidr = 0xdeadbeef;
+	int dpidr_read_retval = ERROR_FAIL;
+	int retval = ERROR_FAIL;
 	int64_t timeout = timeval_ms() + 500;
+	bool timeout_reached = false;
+	bool send_dapabort = false;
+	bool switch_to_dormant = false;
+	uint32_t dpidr = 0xdeadbeef;
+	bool dpidr_was_read = false;
 
-	do {
-		if (dap->switch_through_dormant) {
-			swd_send_sequence(dap, JTAG_TO_DORMANT);
-			swd_send_sequence(dap, DORMANT_TO_SWD);
-		} else {
-			swd_send_sequence(dap, JTAG_TO_SWD);
+	for (unsigned int retry_after_timeout = 0; ; ) {
+		if (dpidr_read_retval != ERROR_OK) {
+			if (dap->switch_through_dormant) {
+				if (switch_to_dormant) {
+					swd_send_sequence(dap, SWD_TO_DORMANT);
+					switch_to_dormant = false;
+				} else {
+					swd_send_sequence(dap, JTAG_TO_DORMANT);
+				}
+				swd_send_sequence(dap, DORMANT_TO_SWD);
+			} else {
+				swd_send_sequence(dap, JTAG_TO_SWD);
+			}
+
+			/* Clear link state, including the SELECT cache. */
+			dap->do_reconnect = false;
+			dap_invalidate_cache(dap);
+
+			/* The sequences to enter in SWD (JTAG_TO_SWD and DORMANT_TO_SWD) end
+			 * with a SWD line reset sequence (50 clk with SWDIO high).
+			 * From ARM IHI 0031F ADIv5.2 and ARM IHI 0074C ADIv6.0,
+			 * chapter B4.3.3 "Connection and line reset sequence":
+			 * - DPv3 (ADIv6) only: line reset sets DP_SELECT_DPBANK to zero;
+			 * - read of DP_DPIDR takes the connection out of reset;
+			 * - write of DP_TARGETSEL keeps the connection in reset;
+			 * - other accesses return protocol error (SWDIO not driven by target).
+			 *
+			 * dap_invalidate_cache() sets dap->select to zero and all validity
+			 * flags to invalid. Set dap->select_dpbanksel_valid only
+			 * to skip the write to DP_SELECT, avoiding the protocol error.
+			 * Read DP_DPIDR to get out of reset.
+			 */
+			dap->select_dpbanksel_valid = true;
+
+			retval = swd_queue_dp_read_inner(dap, DP_DPIDR, &dpidr);
+			if (retval == ERROR_OK)
+				retval = swd_run_inner(dap);
+
+			dpidr_read_retval = retval;
+			if (retval == ERROR_OK) {
+				dpidr_was_read = true;
+				LOG_DEBUG("DP IDR 0x%08" PRIx32, dpidr);
+			} else {
+				dap->switch_through_dormant = !dap->switch_through_dormant;
+			}
 		}
 
-		/* Clear link state, including the SELECT cache. */
-		dap->do_reconnect = false;
-		dap_invalidate_cache(dap);
+		if (dpidr_read_retval == ERROR_OK) {
+			/* Overrun error has been set by line reset seq if overrun detection
+			 * is active. Clear it before write to DP SELECT */
+			uint32_t dp_abort = STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR;
 
-		/* The sequences to enter in SWD (JTAG_TO_SWD and DORMANT_TO_SWD) end
-		 * with a SWD line reset sequence (50 clk with SWDIO high).
-		 * From ARM IHI 0074C ADIv6.0, chapter B4.3.3 "Connection and line reset
-		 * sequence":
-		 * - line reset sets DP_SELECT_DPBANK to zero;
-		 * - read of DP_DPIDR takes the connection out of reset;
-		 * - write of DP_TARGETSEL keeps the connection in reset;
-		 * - other accesses return protocol error (SWDIO not driven by target).
-		 *
-		 * Read DP_DPIDR to get out of reset. Initialize dap->select to zero to
-		 * skip the write to DP_SELECT, avoiding the protocol error. Set again
-		 * dap->select to DP_SELECT_INVALID because the rest of the register is
-		 * unknown after line reset.
-		 */
-		dap->select = 0;
-		retval = swd_queue_dp_read_inner(dap, DP_DPIDR, &dpidr);
-		if (retval == ERROR_OK) {
-			retval = swd_run_inner(dap);
+			if (send_dapabort) {
+				LOG_WARNING("Too long SWD WAIT, issuing DAPABORT");
+				/* DAPABORT needs some number of clock cycles to have an effect.
+				 * If a wait sensitive operation immediately follows,
+				 * it may return WAIT. Run the queue to be safe */
+				retval = swd_queue_dp_write_inner(dap, DP_ABORT, DAPABORT | dp_abort);
+				if (retval == ERROR_OK)
+					retval = swd_run_inner(dap);
+
+			} else {
+				LOG_DEBUG_IO("DP ABORT: clear cticky errors");
+				retval = swd_queue_dp_write_inner(dap, DP_ABORT, dp_abort);
+			}
+
+			/* CMSIS-DAP adapter can return ERROR_WAIT here in contradiction
+			 * to ADI rules. WAIT comes from RDBUFF cmd, added by the adapter
+			 * to get a delayed result (which is not applicable after write
+			 * to DP ABORT). Fortunately it makes no difference whether we got
+			 * WAIT earlier here or later from DP SELECT write. */
+
+			/* Write DP SELECT regardless of the cached value.
+			 * ADIv5 needs it before access to banked reg 4 (CTRL/STAT etc..)
+			 * ADIv6 ensures DPBANKSEL field is initialized to zero
+			 * Write DP SELECT anyway as the operation detects stalled DP. */
+
+			/* We should be aware the overrun detection in DP has not been set
+			 * and could be left from a previous operation in any state.
+			 * Writing the zero data and zero parity is safe because in the case
+			 * of WAIT or FAULT response the adapter expecting ORUNDETECT = 1
+			 * sends the data whereas the DP with ORUNDETECT = 0 looks for
+			 * the start bit of a next cmd (see IHI0031F, B4.2.5 and B4.2.6)
+			 * Zero data prevents DP from interpreting them as a false cmd. */
+
+			if (retval == ERROR_OK) {
+				uint32_t sel = 0;
+				LOG_DEBUG_IO("DP BANK SELECT: %" PRIx32, sel);
+
+				/* dap->select cache gets updated in the following call */
+				retval = swd_queue_dp_write_inner(dap, DP_SELECT, sel);
+			}
+
+			/* The overrun detection has not been enabled in DP.
+			 * Running the queue between DP SELECT write and the following
+			 * banked register (CTRL/STAT) access detects failed write
+			 * in time to prevent misplaced access to other banks. */
+			if (retval == ERROR_OK)
+				retval = swd_run_inner(dap);
+
 			if (retval == ERROR_OK)
 				break;
 		}
 
-		alive_sleep(1);
+		/* Wait gracefully until timeout. Then try more force: DAPABORT */
+		timeout_reached = timeval_ms() > timeout;
+		if (timeout_reached) {
+			retry_after_timeout++;
+			if (retry_after_timeout > 6)
+				break;
+		}
 
-		dap->switch_through_dormant = !dap->switch_through_dormant;
-	} while (timeval_ms() < timeout);
+		alive_sleep((retval == ERROR_WAIT && !timeout_reached) ? 10 : 1);
 
-	dap->select = DP_SELECT_INVALID;
+		if (dpidr_read_retval == ERROR_OK) {
+			/* ERROR_WAIT means the DP is stalled by a not finished previous
+			 * SWD operation - retry without re-sending sequences during
+			 * graceful wait */
+			if (retval != ERROR_WAIT) {
+				/* Force SWD sequence and IDR read */
+				dpidr_read_retval = ERROR_FAIL;
+			} else if (timeout_reached) {
+				/* Alternate DAPABORT and DORMANT methods to revive stalled DP */
+				send_dapabort = retry_after_timeout & 1;
+				switch_to_dormant = !send_dapabort;
+				if (switch_to_dormant)
+					dap->switch_through_dormant = true;
 
-	if (retval != ERROR_OK) {
-		LOG_ERROR("Error connecting DP: cannot read IDR");
-		return retval;
+				/* Force SWD sequence and IDR read */
+				dpidr_read_retval = ERROR_FAIL;
+			}
+		}
 	}
 
-	LOG_INFO("SWD DPIDR 0x%08" PRIx32, dpidr);
+	if (dpidr_was_read)
+		LOG_INFO("SWD DPIDR 0x%08" PRIx32, dpidr);
 
-	do {
-		dap->do_reconnect = false;
+	if (retval == ERROR_OK)
+		return ERROR_OK;
 
-		/* force clear all sticky faults */
-		swd_clear_sticky_errors(dap);
-
-		retval = swd_run_inner(dap);
-		if (retval != ERROR_WAIT)
-			break;
-
-		alive_sleep(10);
-
-	} while (timeval_ms() < timeout);
+	if (dpidr_was_read)
+		LOG_ERROR("Error connecting DP: cannot write to ABORT / SELECT");
+	else
+		LOG_ERROR("Error connecting DP: cannot read IDR");
 
 	return retval;
+}
+
+static int swd_pre_connect(struct adiv5_dap *dap)
+{
+	swd_multidrop_in_swd_state = false;
+
+	return ERROR_OK;
 }
 
 static int swd_connect(struct adiv5_dap *dap)
@@ -410,26 +539,6 @@ static int swd_connect(struct adiv5_dap *dap)
 		status = swd_connect_multidrop(dap);
 	else
 		status = swd_connect_single(dap);
-
-	/* IHI 0031E B4.3.2:
-	 * "A WAIT response must not be issued to the ...
-	 * ... writes to the ABORT register"
-	 * swd_clear_sticky_errors() writes to the ABORT register only.
-	 *
-	 * Unfortunately at least Microchip SAMD51/E53/E54 returns WAIT
-	 * in a corner case. Just try if ABORT resolves the problem.
-	 */
-	if (status == ERROR_WAIT) {
-		LOG_WARNING("Connecting DP: stalled AP operation, issuing ABORT");
-
-		dap->do_reconnect = false;
-
-		status = swd_queue_dp_write_inner(dap, DP_ABORT,
-			DAPABORT | STKCMPCLR | STKERRCLR | WDERRCLR | ORUNERRCLR);
-
-		if (status == ERROR_OK)
-			status = swd_run_inner(dap);
-	}
 
 	if (status == ERROR_OK)
 		status = dap_dp_init(dap);
@@ -494,49 +603,55 @@ static int swd_queue_dp_write(struct adiv5_dap *dap, unsigned reg,
 	return swd_queue_dp_write_inner(dap, reg, data);
 }
 
-/** Select the AP register bank matching bits 7:4 of reg. */
+/** Select the AP register bank */
 static int swd_queue_ap_bankselect(struct adiv5_ap *ap, unsigned reg)
 {
 	int retval;
 	struct adiv5_dap *dap = ap->dap;
 	uint64_t sel;
 
-	if (is_adiv6(dap)) {
+	if (is_adiv6(dap))
 		sel = ap->ap_num | (reg & 0x00000FF0);
-		if (sel == (dap->select & ~0xfULL))
-			return ERROR_OK;
+	else
+		sel = (ap->ap_num << 24) | (reg & ADIV5_DP_SELECT_APBANK);
 
-		if (dap->select != DP_SELECT_INVALID)
-			sel |= dap->select & 0xf;
-		dap->select = sel;
-		LOG_DEBUG("AP BANKSEL: %" PRIx64, sel);
+	uint64_t sel_diff = (sel ^ dap->select) & SELECT_AP_MASK;
 
-		retval = swd_queue_dp_write(dap, DP_SELECT, (uint32_t)sel);
+	bool set_select = !dap->select_valid || (sel_diff & 0xffffffffull);
+	bool set_select1 = is_adiv6(dap) && dap->asize > 32
+						&& (!dap->select1_valid
+							|| sel_diff & (0xffffffffull << 32));
 
-		if (retval == ERROR_OK && dap->asize > 32)
-			retval = swd_queue_dp_write(dap, DP_SELECT1, (uint32_t)(sel >> 32));
-
-		if (retval != ERROR_OK)
-			dap->select = DP_SELECT_INVALID;
-
-		return retval;
+	if (set_select && set_select1) {
+		/* Prepare DP bank for DP_SELECT1 now to save one write */
+		sel |= (DP_SELECT1 & 0x000000f0) >> 4;
+	} else {
+		/* Use the DP part of dap->select regardless of dap->select_valid:
+		 * if !dap->select_valid
+		 * dap->select contains a speculative value likely going to be used
+		 * in the following swd_queue_dp_bankselect().
+		 * Moreover dap->select_valid should never be false here as a DP bank
+		 * is always selected before selecting an AP bank */
+		sel |= dap->select & DP_SELECT_DPBANK;
 	}
 
-	/* ADIv5 */
-	sel = (ap->ap_num << 24) | (reg & 0x000000F0);
-	if (dap->select != DP_SELECT_INVALID)
-		sel |= dap->select & DP_SELECT_DPBANK;
+	if (set_select) {
+		LOG_DEBUG_IO("AP BANK SELECT: %" PRIx32, (uint32_t)sel);
 
-	if (sel == dap->select)
-		return ERROR_OK;
+		retval = swd_queue_dp_write(dap, DP_SELECT, (uint32_t)sel);
+		if (retval != ERROR_OK)
+			return retval;
+	}
 
-	dap->select = sel;
+	if (set_select1) {
+		LOG_DEBUG_IO("AP BANK SELECT1: %" PRIx32, (uint32_t)(sel >> 32));
 
-	retval = swd_queue_dp_write_inner(dap, DP_SELECT, sel);
-	if (retval != ERROR_OK)
-		dap->select = DP_SELECT_INVALID;
+		retval = swd_queue_dp_write(dap, DP_SELECT1, (uint32_t)(sel >> 32));
+		if (retval != ERROR_OK)
+			return retval;
+	}
 
-	return retval;
+	return ERROR_OK;
 }
 
 static int swd_queue_ap_read(struct adiv5_ap *ap, unsigned reg,
@@ -599,7 +714,13 @@ static int swd_run(struct adiv5_dap *dap)
 
 	swd_finish_read(dap);
 
-	return swd_run_inner(dap);
+	retval = swd_run_inner(dap);
+	if (retval != ERROR_OK) {
+		/* fault response */
+		dap->do_reconnect = true;
+	}
+
+	return retval;
 }
 
 /** Put the SWJ-DP back to JTAG mode */
@@ -615,7 +736,12 @@ static void swd_quit(struct adiv5_dap *dap)
 
 	done = true;
 	if (dap_is_multidrop(dap)) {
+		/* Emit the switch seq to dormant state regardless the state mirrored
+		 * in swd_multidrop_in_swd_state. Doing so ensures robust operation
+		 * in the case the variable is out of sync.
+		 * Sending SWD_TO_DORMANT makes no change if the DP is already dormant. */
 		swd->switch_seq(SWD_TO_DORMANT);
+		swd_multidrop_in_swd_state = false;
 		/* Revisit!
 		 * Leaving DPs in dormant state was tested and offers some safety
 		 * against DPs mismatch in case of unintentional use of non-multidrop SWD.
@@ -636,6 +762,7 @@ static void swd_quit(struct adiv5_dap *dap)
 }
 
 const struct dap_ops swd_dap_ops = {
+	.pre_connect_init = swd_pre_connect,
 	.connect = swd_connect,
 	.send_sequence = swd_send_sequence,
 	.queue_dp_read = swd_queue_dp_read,
@@ -657,9 +784,17 @@ static const struct command_registration swd_commands[] = {
 		 * REVISIT can we verify "just one SWD DAP" here/early?
 		 */
 		.name = "newdap",
-		.jim_handler = jim_jtag_newtap,
+		.handler = handle_jtag_newtap,
 		.mode = COMMAND_CONFIG,
-		.help = "declare a new SWD DAP"
+		.help = "declare a new SWD DAP",
+		.usage = "basename dap_type ['-irlen' count] "
+			"['-enable'|'-disable'] "
+			"['-expected_id' number] "
+			"['-ignore-version'] "
+			"['-ignore-bypass'] "
+			"['-ircapture' number] "
+			"['-ir-bypass' number] "
+			"['-mask' number]",
 	},
 	COMMAND_REGISTRATION_DONE
 };

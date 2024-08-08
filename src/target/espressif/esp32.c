@@ -24,20 +24,8 @@ implementation.
 */
 
 /* ESP32 memory map */
-#define ESP32_DRAM_LOW            0x3ffae000
-#define ESP32_DRAM_HIGH           0x40000000
-#define ESP32_IROM_MASK_LOW       0x40000000
-#define ESP32_IROM_MASK_HIGH      0x40064f00
-#define ESP32_IRAM_LOW            0x40070000
-#define ESP32_IRAM_HIGH           0x400a0000
-#define ESP32_RTC_IRAM_LOW        0x400c0000
-#define ESP32_RTC_IRAM_HIGH       0x400c2000
-#define ESP32_RTC_DRAM_LOW        0x3ff80000
-#define ESP32_RTC_DRAM_HIGH       0x3ff82000
 #define ESP32_RTC_DATA_LOW        0x50000000
 #define ESP32_RTC_DATA_HIGH       0x50002000
-#define ESP32_EXTRAM_DATA_LOW     0x3f800000
-#define ESP32_EXTRAM_DATA_HIGH    0x3fc00000
 #define ESP32_DR_REG_LOW          0x3ff00000
 #define ESP32_DR_REG_HIGH         0x3ff71000
 #define ESP32_SYS_RAM_LOW         0x60000000UL
@@ -266,7 +254,10 @@ static int esp32_disable_wdts(struct target *target)
 
 static int esp32_on_halt(struct target *target)
 {
-	return esp32_disable_wdts(target);
+	int ret = esp32_disable_wdts(target);
+	if (ret == ERROR_OK)
+		ret = esp_xtensa_smp_on_halt(target);
+	return ret;
 }
 
 static int esp32_arch_state(struct target *target)
@@ -441,6 +432,11 @@ static const struct command_registration esp32_command_handlers[] = {
 		.chain = esp_xtensa_smp_command_handlers,
 	},
 	{
+		.name = "esp",
+		.usage = "",
+		.chain = esp32_apptrace_command_handlers,
+	},
+	{
 		.name = "esp32",
 		.usage = "",
 		.chain = smp_command_handlers,
@@ -487,6 +483,10 @@ struct target_type esp32_target = {
 
 	.get_gdb_arch = xtensa_get_gdb_arch,
 	.get_gdb_reg_list = xtensa_get_gdb_reg_list,
+
+	.run_algorithm = xtensa_run_algorithm,
+	.start_algorithm = xtensa_start_algorithm,
+	.wait_algorithm = xtensa_wait_algorithm,
 
 	.add_breakpoint = esp_xtensa_breakpoint_add,
 	.remove_breakpoint = esp_xtensa_breakpoint_remove,

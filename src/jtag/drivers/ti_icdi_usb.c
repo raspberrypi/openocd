@@ -369,7 +369,7 @@ static int icdi_usb_query(void *handle)
 	if (h->max_packet != ICDI_PACKET_SIZE) {
 		h->read_buffer = realloc(h->read_buffer, h->max_packet);
 		h->write_buffer = realloc(h->write_buffer, h->max_packet);
-		if (h->read_buffer == 0 || h->write_buffer == 0) {
+		if (!h->read_buffer || !h->write_buffer) {
 			LOG_ERROR("unable to reallocate memory");
 			return ERROR_FAIL;
 		}
@@ -664,7 +664,7 @@ static int icdi_usb_open(struct hl_interface_param_s *param, void **fd)
 
 	h = calloc(1, sizeof(struct icdi_usb_handle_s));
 
-	if (h == 0) {
+	if (!h) {
 		LOG_ERROR("unable to allocate memory");
 		return ERROR_FAIL;
 	}
@@ -675,7 +675,7 @@ static int icdi_usb_open(struct hl_interface_param_s *param, void **fd)
 
 	/* TI (Stellaris) ICDI provides its serial number in the USB descriptor;
 	   no need to provide a callback here. */
-	jtag_libusb_open(param->vid, param->pid, &h->usb_dev, NULL);
+	jtag_libusb_open(param->vid, param->pid, NULL, &h->usb_dev, NULL);
 
 	if (!h->usb_dev) {
 		LOG_ERROR("open failed");
@@ -712,7 +712,7 @@ static int icdi_usb_open(struct hl_interface_param_s *param, void **fd)
 	h->write_buffer = malloc(ICDI_PACKET_SIZE);
 	h->max_packet = ICDI_PACKET_SIZE;
 
-	if (h->read_buffer == 0 || h->write_buffer == 0) {
+	if (!h->read_buffer || !h->write_buffer) {
 		LOG_DEBUG("malloc failed");
 		goto error_open;
 	}

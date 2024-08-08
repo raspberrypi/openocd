@@ -71,20 +71,6 @@ static const struct freertos_params freertos_params_list[] = {
 	&rtos_standard_cortex_m4f_stacking,
 	&rtos_standard_cortex_m4f_fpu_stacking,
 	},
-	{
-	"nds32_v3",			/* target_name */
-	4,						/* thread_count_width; */
-	4,						/* pointer_width; */
-	16,						/* list_next_offset; */
-	20,						/* list_width; */
-	8,						/* list_elem_next_offset; */
-	12,						/* list_elem_content_offset */
-	0,						/* thread_stack_offset; */
-	52,						/* thread_name_offset; */
-	&rtos_standard_nds32_n1068_stacking,	/* stacking_info */
-	&rtos_standard_cortex_m4f_stacking,
-	&rtos_standard_cortex_m4f_fpu_stacking,
-	},
 };
 
 static bool freertos_detect_rtos(struct target *target);
@@ -94,7 +80,7 @@ static int freertos_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
 		struct rtos_reg **reg_list, int *num_regs);
 static int freertos_get_symbol_list_to_lookup(struct symbol_table_elem *symbol_list[]);
 
-struct rtos_type freertos_rtos = {
+const struct rtos_type freertos_rtos = {
 	.name = "FreeRTOS",
 
 	.detect_rtos = freertos_detect_rtos,
@@ -326,7 +312,6 @@ static int freertos_update_threads(struct rtos *rtos)
 				(list_elem_ptr != prev_list_elem_ptr) &&
 				(tasks_found < thread_list_size)) {
 			/* Get the location of the thread structure. */
-			rtos->thread_details[tasks_found].threadid = 0;
 			retval = target_read_u32(rtos->target,
 					list_elem_ptr + param->list_elem_content_offset,
 					&pointer_casts_are_bad);
@@ -379,6 +364,7 @@ static int freertos_update_threads(struct rtos *rtos)
 
 			tasks_found++;
 			list_thread_count--;
+			rtos->thread_count = tasks_found;
 
 			prev_list_elem_ptr = list_elem_ptr;
 			list_elem_ptr = 0;
@@ -397,7 +383,6 @@ static int freertos_update_threads(struct rtos *rtos)
 	}
 
 	free(list_of_lists);
-	rtos->thread_count = tasks_found;
 	return 0;
 }
 

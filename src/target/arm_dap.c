@@ -20,8 +20,6 @@
 
 static LIST_HEAD(all_dap);
 
-extern const struct dap_ops swd_dap_ops;
-extern const struct dap_ops jtag_dp_ops;
 extern struct adapter_driver *adapter_driver;
 
 /* DAP command support */
@@ -93,6 +91,7 @@ static int dap_init_all(void)
 {
 	struct arm_dap_object *obj;
 	int retval;
+	bool pre_connect = true;
 
 	LOG_DEBUG("Initializing all DAPs ...");
 
@@ -123,6 +122,14 @@ static int dap_init_all(void)
 		} else {
 			LOG_DEBUG("DAP %s configured to use %s protocol by user cfg file", jtag_tap_name(dap->tap),
 				is_adiv6(dap) ? "ADIv6" : "ADIv5");
+		}
+
+		if (pre_connect && dap->ops->pre_connect_init) {
+			retval = dap->ops->pre_connect_init(dap);
+			if (retval != ERROR_OK)
+				return retval;
+
+			pre_connect = false;
 		}
 
 		retval = dap->ops->connect(dap);
@@ -421,20 +428,16 @@ static int jim_dap_create(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 	return dap_create(&goi);
 }
 
-static int jim_dap_names(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+COMMAND_HANDLER(handle_dap_names)
 {
-	struct arm_dap_object *obj;
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	if (argc != 1) {
-		Jim_WrongNumArgs(interp, 1, argv, "Too many parameters");
-		return JIM_ERR;
-	}
-	Jim_SetResult(interp, Jim_NewListObj(interp, NULL, 0));
-	list_for_each_entry(obj, &all_dap, lh) {
-		Jim_ListAppendElement(interp, Jim_GetResult(interp),
-			Jim_NewStringObj(interp, obj->name, -1));
-	}
-	return JIM_OK;
+	struct arm_dap_object *obj;
+	list_for_each_entry(obj, &all_dap, lh)
+		command_print(CMD, "%s", obj->name);
+
+	return ERROR_OK;
 }
 
 COMMAND_HANDLER(handle_dap_init)
@@ -500,7 +503,7 @@ static const struct command_registration dap_subcommand_handlers[] = {
 	{
 		.name = "names",
 		.mode = COMMAND_ANY,
-		.jim_handler = jim_dap_names,
+		.handler = handle_dap_names,
 		.usage = "",
 		.help = "Lists all registered DAP instances by name",
 	},

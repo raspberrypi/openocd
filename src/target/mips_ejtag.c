@@ -47,7 +47,7 @@ int mips_ejtag_get_idcode(struct mips_ejtag *ejtag_info)
 	return mips_ejtag_drscan_32(ejtag_info, &ejtag_info->idcode);
 }
 
-static int mips_ejtag_get_impcode(struct mips_ejtag *ejtag_info)
+int mips_ejtag_get_impcode(struct mips_ejtag *ejtag_info)
 {
 	mips_ejtag_set_instr(ejtag_info, EJTAG_INST_IMPCODE);
 
@@ -259,9 +259,12 @@ int mips_ejtag_exit_debug(struct mips_ejtag *ejtag_info)
 {
 	struct pa_list pracc_list = {.instr = MIPS32_DRET(ejtag_info->isa), .addr = 0};
 	struct pracc_queue_info ctx = {.max_code = 1, .pracc_list = &pracc_list, .code_count = 1, .store_count = 0};
+	struct mips32_common *mips32 = container_of(ejtag_info,
+					     struct mips32_common, ejtag_info);
 
 	/* execute our dret instruction */
-	ctx.retval = mips32_pracc_queue_exec(ejtag_info, &ctx, NULL, 0); /* shift out instr, omit last check */
+	ctx.retval = mips32_pracc_queue_exec(ejtag_info, &ctx, NULL,
+				      mips32->cpu_quirks & EJTAG_QUIRK_PAD_DRET);
 
 	/* pic32mx workaround, false pending at low core clock */
 	jtag_add_sleep(1000);
@@ -329,7 +332,7 @@ static void ejtag_v26_print_imp(struct mips_ejtag *ejtag_info)
 		EJTAG_IMP_HAS(EJTAG_V26_IMP_DINT) ? " DINT" : "");
 }
 
-static void ejtag_main_print_imp(struct mips_ejtag *ejtag_info)
+void ejtag_main_print_imp(struct mips_ejtag *ejtag_info)
 {
 	LOG_DEBUG("EJTAG main: features:%s%s%s%s%s",
 		EJTAG_IMP_HAS(EJTAG_IMP_ASID8) ? " ASID_8" : "",

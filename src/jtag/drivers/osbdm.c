@@ -363,7 +363,7 @@ static int osbdm_flush(struct osbdm *osbdm, struct queue *queue)
 static int osbdm_open(struct osbdm *osbdm)
 {
 	(void)memset(osbdm, 0, sizeof(*osbdm));
-	if (jtag_libusb_open(osbdm_vid, osbdm_pid, &osbdm->devh, NULL) != ERROR_OK)
+	if (jtag_libusb_open(osbdm_vid, osbdm_pid, NULL, &osbdm->devh, NULL) != ERROR_OK)
 		return ERROR_FAIL;
 
 	if (libusb_claim_interface(osbdm->devh, 0) != ERROR_OK)
@@ -628,7 +628,7 @@ static int osbdm_execute_command(
 	return retval;
 }
 
-static int osbdm_execute_queue(void)
+static int osbdm_execute_queue(struct jtag_command *cmd_queue)
 {
 	int retval = ERROR_OK;
 
@@ -637,7 +637,7 @@ static int osbdm_execute_queue(void)
 		LOG_ERROR("BUG: can't allocate bit queue");
 		retval = ERROR_FAIL;
 	} else {
-		struct jtag_command *cmd = jtag_command_queue;
+		struct jtag_command *cmd = cmd_queue;
 
 		while (retval == ERROR_OK && cmd) {
 			retval = osbdm_execute_command(&osbdm_context, queue, cmd);

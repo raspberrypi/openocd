@@ -211,6 +211,8 @@ enum {
 	FPV4_SP,
 	FPV5_SP,
 	FPV5_DP,
+	FPV5_MVE_I,
+	FPV5_MVE_F,
 };
 
 #define ARMV7M_NUM_CORE_REGS (ARMV7M_CORE_LAST_REG - ARMV7M_CORE_FIRST_REG + 1)
@@ -314,7 +316,7 @@ int armv7m_run_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
 		target_addr_t entry_point, target_addr_t exit_point,
-		int timeout_ms, void *arch_info);
+		unsigned int timeout_ms, void *arch_info);
 
 int armv7m_start_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
@@ -325,7 +327,7 @@ int armv7m_start_algorithm(struct target *target,
 int armv7m_wait_algorithm(struct target *target,
 		int num_mem_params, struct mem_param *mem_params,
 		int num_reg_params, struct reg_param *reg_params,
-		target_addr_t exit_point, int timeout_ms,
+		target_addr_t exit_point, unsigned int timeout_ms,
 		void *arch_info);
 
 int armv7m_invalidate_core_regs(struct target *target);

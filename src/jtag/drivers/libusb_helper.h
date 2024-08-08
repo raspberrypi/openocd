@@ -30,13 +30,16 @@
 typedef char * (*adapter_get_alternate_serial_fn)(struct libusb_device_handle *device,
 		struct libusb_device_descriptor *dev_desc);
 
+bool jtag_libusb_match_ids(struct libusb_device_descriptor *dev_desc,
+		const uint16_t vids[], const uint16_t pids[]);
 int jtag_libusb_open(const uint16_t vids[], const uint16_t pids[],
-		struct libusb_device_handle **out,
+		const char *product, struct libusb_device_handle **out,
 		adapter_get_alternate_serial_fn adapter_get_alternate_serial);
 void jtag_libusb_close(struct libusb_device_handle *dev);
 int jtag_libusb_control_transfer(struct libusb_device_handle *dev,
 		uint8_t request_type, uint8_t request, uint16_t value,
-		uint16_t index, char *bytes, uint16_t size, unsigned int timeout);
+		uint16_t index, char *bytes, uint16_t size, unsigned int timeout,
+		int *transferred);
 int jtag_libusb_bulk_write(struct libusb_device_handle *dev, int ep,
 		char *bytes, int size, int timeout, int *transferred);
 int jtag_libusb_bulk_read(struct libusb_device_handle *dev, int ep,
@@ -63,5 +66,28 @@ int jtag_libusb_choose_interface(struct libusb_device_handle *devh,
 		int bclass, int subclass, int protocol, int trans_type);
 int jtag_libusb_get_pid(struct libusb_device *dev, uint16_t *pid);
 int jtag_libusb_handle_events_completed(int *completed);
+
+/**
+ * Attempts to allocate a block of persistent DMA memory suitable for transfers
+ * against the USB device. Fall-back to the ordinary heap malloc()
+ * if the first libusb_dev_mem_alloc() call fails.
+ * @param devh _libusb_ device handle.
+ * @param length size of desired data buffer
+ * @returns a pointer to the newly allocated memory, or NULL on failure
+ */
+uint8_t *oocd_libusb_dev_mem_alloc(libusb_device_handle *devh,
+			size_t length);
+
+/**
+ * Free device memory allocated with oocd_libusb_dev_mem_alloc().
+ * Uses either libusb_dev_mem_free() or free() consistently with
+ * the used method of allocation.
+ * @param devh _libusb_ device handle.
+ * @param buffer pointer to the previously allocated memory
+ * @param length size of desired data buffer
+ * @returns Returns ERROR_OK on success, ERROR_FAIL otherwise.
+ */
+int oocd_libusb_dev_mem_free(libusb_device_handle *devh,
+			uint8_t *buffer, size_t length);
 
 #endif /* OPENOCD_JTAG_DRIVERS_LIBUSB_HELPER_H */

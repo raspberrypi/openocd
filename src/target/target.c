@@ -69,6 +69,7 @@ static int target_get_gdb_fileio_info_default(struct target *target,
 		struct gdb_fileio_info *fileio_info);
 static int target_gdb_fileio_end_default(struct target *target, int retcode,
 		int fileio_errno, bool ctrl_c);
+static int target_handle_event_ret(struct target *target, enum target_event e, const char **str_ret);
 
 static struct target_type *target_types[] = {
 	&arm7tdmi_target,
@@ -188,6 +189,7 @@ static const struct nvp nvp_target_event[] = {
 	{ .value = TARGET_EVENT_EXAMINE_FAIL, .name = "examine-fail" },
 	{ .value = TARGET_EVENT_EXAMINE_END, .name = "examine-end" },
 
+	{ .value = TARGET_EVENT_CHECK_AVAILABILITY, .name = "check-availability" },
 	{ .value = TARGET_EVENT_BECOME_UNAVAILABLE, .name = "become-unavailable" },
 	{ .value = TARGET_EVENT_BECOME_AVAILABLE, .name = "become-available" },
 
@@ -486,9 +488,40 @@ struct target *get_current_target_or_null(struct command_context *cmd_ctx)
 		: cmd_ctx->current_target;
 }
 
+static int target_check_availability(struct target *target)
+{
+	int retval;
+	const char *str_ret;
+
+	retval = target_handle_event_ret(target, TARGET_EVENT_CHECK_AVAILABILITY, &str_ret);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (!strcmp(str_ret, "available")) {
+		if (target->state == TARGET_UNAVAILABLE) {
+			LOG_TARGET_INFO(target, "become available");
+			target->state = TARGET_UNKNOWN;
+		}
+		return ERROR_OK;
+	}
+	if (!strcmp(str_ret, "unavailable")) {
+		if (target->state != TARGET_UNAVAILABLE) {
+			LOG_TARGET_INFO(target, "become unavailable");
+			target->state = TARGET_UNAVAILABLE;
+		}
+		return ERROR_OK;
+	}
+	return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+}
+
 int target_poll(struct target *target)
 {
 	int retval;
+
+	retval = target_check_availability(target);
+	if (retval == ERROR_OK && target->state == TARGET_UNAVAILABLE) {
+		return ERROR_OK;
+	}
 
 	/* We can't poll until after examine */
 	if (!target_was_examined(target) && target->state != TARGET_UNAVAILABLE) {
@@ -684,11 +717,17 @@ static int default_check_reset(struct target *target)
  * Keep in sync */
 int target_examine_one(struct target *target)
 {
+	int retval;
+
+	retval = target_check_availability(target);
+	if (retval == ERROR_OK && target->state == TARGET_UNAVAILABLE)
+		return ERROR_OK;
+
 	LOG_TARGET_DEBUG(target, "Examination started");
 
 	target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_START);
 
-	int retval = target->type->examine(target);
+	retval = target->type->examine(target);
 	if (retval != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Examination failed");
 		LOG_TARGET_DEBUG(target, "examine() returned error code %d", retval);
@@ -4669,10 +4708,13 @@ COMMAND_HANDLER(handle_target_write_memory)
 /* FIX? should we propagate errors here rather than printing them
  * and continuing?
  */
-void target_handle_event(struct target *target, enum target_event e)
+static int target_handle_event_ret(struct target *target, enum target_event e, const char **str_ret)
 {
 	struct target_event_action *teap;
-	int retval;
+	int retval = ERROR_OK;
+
+	if (str_ret)
+		*str_ret = "";
 
 	list_for_each_entry(teap, &target->events_action, list) {
 		if (teap->event == e) {
@@ -4696,21 +4738,32 @@ void target_handle_event(struct target *target, enum target_event e)
 			cmd_ctx->current_target_override = saved_target_override;
 
 			if (retval == ERROR_COMMAND_CLOSE_CONNECTION)
-				return;
+				return ERROR_COMMAND_CLOSE_CONNECTION;
 
 			if (retval == JIM_RETURN)
 				retval = teap->interp->returnCode;
 
-			if (retval != JIM_OK) {
+			if (retval == JIM_OK) {
+				retval = ERROR_OK;
+				if (str_ret)
+					*str_ret = Jim_GetString(Jim_GetResult(teap->interp), NULL);
+			} else {
 				Jim_MakeErrorMessage(teap->interp);
 				LOG_TARGET_ERROR(target, "Execution of event %s failed:\n%s",
 						  target_event_name(e),
 						  Jim_GetString(Jim_GetResult(teap->interp), NULL));
 				/* clean both error code and stacktrace before return */
 				Jim_Eval(teap->interp, "error \"\" \"\"");
+				retval = ERROR_FAIL;
 			}
 		}
 	}
+	return retval;
+}
+
+void target_handle_event(struct target *target, enum target_event e)
+{
+	target_handle_event_ret(target, e, NULL);
 }
 
 COMMAND_HANDLER(handle_target_get_reg)

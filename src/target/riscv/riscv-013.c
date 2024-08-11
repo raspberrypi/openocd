@@ -4785,6 +4785,18 @@ static int write_memory_bus_v1(struct target *target, target_addr_t address,
 				/* Fail the whole operation. */
 				return ERROR_FAIL;
 			}
+
+			uint32_t dmstatus;
+			result = dmstatus_read(target, &dmstatus, true);
+			if (result != ERROR_OK)
+				return result;
+
+			if (get_field(dmstatus, DM_DMSTATUS_ALLUNAVAIL)
+					|| get_field(dmstatus, DM_DMSTATUS_ALLNONEXISTENT)) {
+				LOG_TARGET_ERROR(target, "hart not exist/unavailable!");
+				return ERROR_FAIL;
+			}
+
 			/* Try again - resume writing. */
 			continue;
 		}

@@ -2835,7 +2835,7 @@ static int handle_became_unavailable(struct target *target,
 {
 	RISCV013_INFO(info);
 	info->dcsr_ebreak_is_set = false;
-	return ERROR_OK;
+	return riscv013_invalidate_cached_progbuf(target);
 }
 
 static int tick(struct target *target)

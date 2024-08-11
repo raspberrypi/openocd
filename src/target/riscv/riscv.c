@@ -3056,6 +3056,17 @@ static int riscv_poll_hart(struct target *target, enum riscv_next_action *next_a
 	if (riscv_get_hart_state(target, &state) != ERROR_OK)
 		return ERROR_FAIL;
 
+	if (!target_was_examined(target)) {
+		if (target->state == TARGET_UNAVAILABLE
+				&& state != RISCV_STATE_UNAVAILABLE
+				&& state != RISCV_STATE_NON_EXISTENT) {
+			LOG_TARGET_INFO(target, "became available, not yet examined");
+			target_call_event_callbacks(target, TARGET_EVENT_BECOME_AVAILABLE);
+			target->state = TARGET_UNKNOWN;
+		}
+		return ERROR_OK;
+	}
+
 	if (state == RISCV_STATE_NON_EXISTENT) {
 		LOG_TARGET_ERROR(target, "Hart is non-existent!");
 		return ERROR_FAIL;
@@ -3232,7 +3243,7 @@ int riscv_openocd_poll(struct target *target)
 		 * check this flag further down. */
 		info->halted_needs_event_callback = false;
 
-		if (!target_was_examined(t))
+		if (!target_was_examined(t) && t->state != TARGET_UNAVAILABLE)
 			continue;
 
 		enum riscv_next_action next_action;

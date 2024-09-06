@@ -189,7 +189,7 @@ static int rp2040_lookup_rom_symbol(struct target *target, uint16_t tag, uint16_
 	}
 
 	uint16_t ptr_to_entry;
-	const uint offset_magic_to_table_ptr = flags == RT_FLAG_DATA ? 6 : 4;
+	const uint32_t offset_magic_to_table_ptr = flags == RT_FLAG_DATA ? 6 : 4;
 	int err = target_read_u16(target, BOOTROM_MAGIC_ADDR + offset_magic_to_table_ptr, &ptr_to_entry);
 	if (err != ERROR_OK)
 		return err;
@@ -233,7 +233,7 @@ static int rp2350_a0_lookup_symbol(struct target *target, uint16_t tag, uint16_t
 	}
 
 	uint16_t ptr_to_entry;
-	const uint offset_magic_to_table_ptr = 4;
+	const uint32_t offset_magic_to_table_ptr = 4;
 	int err = target_read_u16(target, magic_ptr + offset_magic_to_table_ptr, &ptr_to_entry);
 	if (err != ERROR_OK)
 		return err;
@@ -411,7 +411,7 @@ static int rp2xxx_call_rom_func_batch(struct target *target, struct rp2040_flash
 	rp2xxx_rom_call_batch_record_t *calls, unsigned int n_calls)
 {
 	// Note +1 is for the null terminator
-	uint batch_words = 1 + (
+	uint32_t batch_words = 1 + (
 		ROM_CALL_BATCH_ALGO_SIZE_BYTES +
 		n_calls * sizeof(rp2xxx_rom_call_batch_record_t)
 	) / sizeof(uint32_t);
@@ -488,7 +488,7 @@ static int rp2xxx_call_rom_func_batch(struct target *target, struct rp2040_flash
 	// call specified by the batch records.
 	target_addr_t algo_start_addr = priv->ram_algo_space->address;
 	target_addr_t algo_end_addr = priv->ram_algo_space->address + rp2xxx_rom_call_batch_algo_bkpt_offset;
-	uint algo_timeout_ms = 3000;
+	unsigned int algo_timeout_ms = 3000;
 	if (is_arm(target_to_arm(target))) {
 		struct armv7m_algorithm alg_info;
 		alg_info.common_magic = ARMV7M_COMMON_MAGIC;

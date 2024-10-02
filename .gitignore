@@ -10,6 +10,7 @@
 *.lo
 *.la
 *.in
+confdefs.h
 
 # generated source files
 src/jtag/minidriver_imp.h

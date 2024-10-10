@@ -228,8 +228,8 @@ static int bcm2835gpio_swd_write_fast(int swclk, int swdio)
 	swclk = swclk ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].active_low ? 1 : 0);
 	swdio = swdio ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].active_low ? 1 : 0);
 
-	if ((adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num & 32) == 
-		(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num & 32)) {
+	if ((adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num >= 32) == 
+		(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num >= 32)) {
 
 		uint32_t set = swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num |
 						swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;

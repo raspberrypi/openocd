@@ -86,8 +86,7 @@ static bool is_gpio_config_valid(enum adapter_gpio_config_index idx)
 	/* Only chip 0 is supported, accept unset value (-1) too, allow
 	 * any gpio up to including 45 */
 	return (adapter_gpio_config[idx].chip_num == 0 ||
-		adapter_gpio_config[idx].chip_num == -1)
-		&& adapter_gpio_config[idx].gpio_num >= 0
+		adapter_gpio_config[idx].chip_num == ADAPTER_GPIO_NOT_SET)
 		&& adapter_gpio_config[idx].gpio_num <= 45;
 }
 

@@ -84,9 +84,9 @@ static inline void bcm2835_delay(void)
 static bool is_gpio_config_valid(enum adapter_gpio_config_index idx)
 {
 	/* Only chip 0 is supported, accept unset value (-1) too, allow
-     * any gpio up to including 45 */
-	return adapter_gpio_config[idx].chip_num >= -1
-		&& adapter_gpio_config[idx].chip_num <= 0
+	 * any gpio up to including 45 */
+	return (adapter_gpio_config[idx].chip_num == 0 ||
+		adapter_gpio_config[idx].chip_num == -1)
 		&& adapter_gpio_config[idx].gpio_num >= 0
 		&& adapter_gpio_config[idx].gpio_num <= 45;
 }
@@ -184,38 +184,38 @@ static bb_value_t bcm2835gpio_read(void)
 
 static int bcm2835gpio_write(int tck, int tms, int tdi)
 {
-    if ((adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num & 32) == 
-        (adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num & 32) &&
-        (adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num & 32) == 
-        (adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num & 32)) {
-        uint32_t set = tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num |
-                tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num |
-                tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
-        uint32_t clear = !tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num |
-                !tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num |
-                !tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
+	if ((adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num >= 32) == 
+		(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num >= 32) &&
+		(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num >= 32) == 
+		(adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num >= 32)) {
+		uint32_t set = tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num |
+				tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num |
+				tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
+		uint32_t clear = !tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num |
+				!tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num |
+				!tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = clear;
-    } else {
-        uint32_t set = tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num;
-        uint32_t clear = !tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num;
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = clear;
+	} else {
+		uint32_t set = tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num;
+		uint32_t clear = !tck << adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = clear;
-        
-        set = tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num;
-        clear = !tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num;
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TCK].gpio_num) = clear;
+		
+		set = tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num;
+		clear = !tms << adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num) = clear;
-        
-        set = tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
-        clear = !tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TMS].gpio_num) = clear;
+		
+		set = tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
+		clear = !tdi << adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num) = clear;
-    }
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_TDI].gpio_num) = clear;
+	}
 	bcm2835_gpio_synchronize();
 
 	bcm2835_delay();
@@ -226,32 +226,32 @@ static int bcm2835gpio_write(int tck, int tms, int tdi)
 /* Requires push-pull drive mode for swclk and swdio */
 static int bcm2835gpio_swd_write_fast(int swclk, int swdio)
 {
-    swclk = swclk ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].active_low ? 1 : 0);
-    swdio = swdio ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].active_low ? 1 : 0);
+	swclk = swclk ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].active_low ? 1 : 0);
+	swdio = swdio ^ (adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].active_low ? 1 : 0);
 
-    if ((adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num & 32) == 
-        (adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num & 32)) {
+	if ((adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num & 32) == 
+		(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num & 32)) {
 
-        uint32_t set = swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num |
-                        swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
-        uint32_t clear = !swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num |
-                        !swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
+		uint32_t set = swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num |
+						swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
+		uint32_t clear = !swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num |
+						!swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = clear;
-    } else {
-        uint32_t set = swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num;
-        uint32_t clear = !swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num;
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = clear;
+	} else {
+		uint32_t set = swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num;
+		uint32_t clear = !swclk << adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = clear;
-        
-        set = swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
-        clear = !swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWCLK].gpio_num) = clear;
+		
+		set = swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
+		clear = !swdio << adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num;
 
-        GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num) = set;
-        GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num) = clear;
-    }
+		GPIO_SET(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num) = set;
+		GPIO_CLR(adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].gpio_num) = clear;
+	}
 	bcm2835_gpio_synchronize();
 
 	bcm2835_delay();

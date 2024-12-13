@@ -476,7 +476,7 @@ static void riscv_free_registers(struct target *target)
 		if (target->reg_cache->reg_list) {
 			free(target->reg_cache->reg_list[0].arch_info);
 			/* Free the ones we allocated separately. */
-			for (unsigned int i = GDB_REGNO_COUNT; i < target->reg_cache->num_regs; i++)
+			for (unsigned i = GDB_REGNO_COUNT; i < target->reg_cache->num_regs; i++)
 				free(target->reg_cache->reg_list[i].arch_info);
 			for (unsigned int i = 0; i < target->reg_cache->num_regs; i++)
 				free(target->reg_cache->reg_list[i].value);
@@ -1581,7 +1581,7 @@ static int riscv_address_translate(struct target *target,
 	if (result != ERROR_OK)
 		return result;
 
-	unsigned int xlen = riscv_xlen(target);
+	unsigned xlen = riscv_xlen(target);
 	mode = get_field(satp_value, RISCV_SATP_MODE(xlen));
 	switch (mode) {
 		case SATP_MODE_SV32:
@@ -1925,7 +1925,7 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 				GDB_REGNO_PC,
 				GDB_REGNO_MSTATUS, GDB_REGNO_MEPC, GDB_REGNO_MCAUSE,
 			};
-			for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
+			for (unsigned i = 0; i < ARRAY_SIZE(regnums); i++) {
 				enum gdb_regno regno = regnums[i];
 				riscv_reg_t reg_value;
 				if (riscv_get_register(target, &reg_value, regno) != ERROR_OK)
@@ -2005,8 +2005,8 @@ static int riscv_checksum_memory(struct target *target,
 
 	static const uint8_t *crc_code;
 
-	unsigned int xlen = riscv_xlen(target);
-	unsigned int crc_code_size;
+	unsigned xlen = riscv_xlen(target);
+	unsigned crc_code_size;
 	if (xlen == 32) {
 		crc_code = riscv32_crc_code;
 		crc_code_size = sizeof(riscv32_crc_code);
@@ -2185,8 +2185,8 @@ int riscv_openocd_poll(struct target *target)
 	int halted_hart = -1;
 
 	if (target->smp) {
-		unsigned int should_remain_halted = 0;
-		unsigned int should_resume = 0;
+		unsigned should_remain_halted = 0;
+		unsigned should_resume = 0;
 		struct target_list *list;
 		foreach_smp_target(list, target->smp_targets) {
 			struct target *t = list->target;
@@ -2434,8 +2434,8 @@ static int parse_ranges(struct list_head *ranges, const char *tcl_arg, const cha
 	/* For backward compatibility, allow multiple parameters within one TCL argument, separated by ',' */
 	char *arg = strtok(args, ",");
 	while (arg) {
-		unsigned int low = 0;
-		unsigned int high = 0;
+		unsigned low = 0;
+		unsigned high = 0;
 		char *name = NULL;
 
 		char *dash = strchr(arg, '-');
@@ -3053,7 +3053,7 @@ static const struct command_registration riscv_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-static unsigned int riscv_xlen_nonconst(struct target *target)
+static unsigned riscv_xlen_nonconst(struct target *target)
 {
 	return riscv_xlen(target);
 }
@@ -3192,7 +3192,7 @@ static int riscv_step_rtos_hart(struct target *target)
 bool riscv_supports_extension(struct target *target, char letter)
 {
 	RISCV_INFO(r);
-	unsigned int num;
+	unsigned num;
 	if (letter >= 'a' && letter <= 'z')
 		num = letter - 'a';
 	else if (letter >= 'A' && letter <= 'Z')
@@ -3202,7 +3202,7 @@ bool riscv_supports_extension(struct target *target, char letter)
 	return r->misa & BIT(num);
 }
 
-unsigned int riscv_xlen(const struct target *target)
+unsigned riscv_xlen(const struct target *target)
 {
 	RISCV_INFO(r);
 	return r->xlen;
@@ -3776,7 +3776,7 @@ static struct reg_arch_type riscv_reg_arch_type = {
 };
 
 struct csr_info {
-	unsigned int number;
+	unsigned number;
 	const char *name;
 };
 
@@ -3956,7 +3956,7 @@ int riscv_init_registers(struct target *target)
 	};
 	/* encoding.h does not contain the registers in sorted order. */
 	qsort(csr_info, ARRAY_SIZE(csr_info), sizeof(*csr_info), cmp_csr_info);
-	unsigned int csr_info_index = 0;
+	unsigned csr_info_index = 0;
 
 	int custom_within_range = 0;
 
@@ -4211,7 +4211,7 @@ int riscv_init_registers(struct target *target)
 		} else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095) {
 			r->group = "csr";
 			r->feature = &feature_csr;
-			unsigned int csr_number = number - GDB_REGNO_CSR0;
+			unsigned csr_number = number - GDB_REGNO_CSR0;
 
 			while (csr_info[csr_info_index].number < csr_number &&
 					csr_info_index < ARRAY_SIZE(csr_info) - 1) {
@@ -4374,7 +4374,7 @@ int riscv_init_registers(struct target *target)
 
 			range_list_t *range = list_first_entry(&info->expose_custom, range_list_t, list);
 
-			unsigned int custom_number = range->low + custom_within_range;
+			unsigned custom_number = range->low + custom_within_range;
 
 			r->group = "custom";
 			r->feature = &feature_custom;

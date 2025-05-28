@@ -339,6 +339,21 @@ static int cmsis_dap_usb_open(struct cmsis_dap *dap, uint16_t vids[], uint16_t p
 			LOG_INFO("Using CMSIS-DAPv2 interface with VID:PID=0x%04x:0x%04x, serial=%s",
 					dev_desc.idVendor, dev_desc.idProduct, dev_serial);
 
+			/* Debugprobe hackery: old versions do not pipeline packets properly */
+			if (dev_desc.idVendor == 0x2e8a && dev_desc.idProduct == 0x000c) {
+				/* match on "major.minor" < 2.2.x */
+				if ((dev_desc.bcdDevice & 0xfff0) < 0x0220) {
+					LOG_WARNING("***");
+					LOG_WARNING("*** Old Raspberry Pi Debugprobe firmware detected (%x.%01x.%01x)",
+						dev_desc.bcdDevice >> 8, (dev_desc.bcdDevice & 0xf0) >> 4, dev_desc.bcdDevice & 0xf);
+					LOG_WARNING("*** Using low-performance workaround");
+					LOG_WARNING("*** Please update to the latest release at:");
+					LOG_WARNING("*** https://github.com/raspberrypi/debugprobe/releases/latest");
+					LOG_WARNING("***");
+					dap->quirk_mode = 1;
+				}
+			}
+
 			int current_config;
 			err = libusb_get_configuration(dev_handle, &current_config);
 			if (err) {

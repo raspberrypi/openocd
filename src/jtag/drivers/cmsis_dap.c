@@ -84,7 +84,7 @@ static uint16_t cmsis_dap_vid[MAX_USB_IDS + 1] = { 0 };
 static uint16_t cmsis_dap_pid[MAX_USB_IDS + 1] = { 0 };
 static int cmsis_dap_backend = -1;
 static bool swd_mode;
-static bool cmsis_dap_quirk_mode;  /* enable expensive workarounds */
+bool cmsis_dap_quirk_mode;  /* enable expensive workarounds */
 
 /* CMSIS-DAP General Commands */
 #define CMD_DAP_INFO              0x00

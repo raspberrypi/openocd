@@ -954,6 +954,9 @@ static int cortex_m_poll_one(struct target *target)
 	struct cortex_m_common *cortex_m = target_to_cm(target);
 	struct armv7m_common *armv7m = &cortex_m->armv7m;
 
+	if (target->state == TARGET_UNAVAILABLE)
+		return ERROR_OK;
+
 	/* Read from Debug Halting Control and Status Register */
 	retval = cortex_m_read_dhcsr_atomic_sticky(target);
 	if (retval != ERROR_OK) {

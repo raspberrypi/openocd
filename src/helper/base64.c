@@ -1,11 +1,9 @@
-// SPDX-License-Identifier: BSD-3-Clause
-
 /*
  * Base64 encoding/decoding (RFC1341)
  * Copyright (c) 2005-2011, Jouni Malinen <j@w1.fi>
  *
- * Original file from FreeBSD code
- * https://cgit.freebsd.org/src/tree/contrib/wpa/src/utils/base64.c?id=f05cddf940db
+ * This software may be distributed under the terms of the BSD license.
+ * See README for more details.
  */
 
 
@@ -44,7 +42,7 @@ unsigned char *base64_encode(const unsigned char *src, size_t len,
 	if (olen < len)
 		return NULL; /* integer overflow */
 	out = malloc(olen);
-	if (!out)
+	if (out == NULL)
 		return NULL;
 
 	end = src + len;
@@ -107,7 +105,7 @@ unsigned char *base64_decode(const unsigned char *src, size_t len,
 
 	memset(dtable, 0x80, 256);
 	for (i = 0; i < sizeof(base64_table) - 1; i++)
-		dtable[base64_table[i]] = (unsigned char)i;
+		dtable[base64_table[i]] = (unsigned char) i;
 	dtable['='] = 0;
 
 	count = 0;
@@ -120,10 +118,9 @@ unsigned char *base64_decode(const unsigned char *src, size_t len,
 		return NULL;
 
 	olen = count / 4 * 3;
-	out = malloc(olen);
-	if (!out)
+	pos = out = malloc(olen);
+	if (out == NULL)
 		return NULL;
-	pos = out;
 
 	count = 0;
 	for (i = 0; i < len; i++) {
@@ -141,11 +138,11 @@ unsigned char *base64_decode(const unsigned char *src, size_t len,
 			*pos++ = (block[2] << 6) | block[3];
 			count = 0;
 			if (pad) {
-				if (pad == 1) {
+				if (pad == 1)
 					pos--;
-				} else if (pad == 2) {
+				else if (pad == 2)
 					pos -= 2;
-				} else {
+				else {
 					/* Invalid padding */
 					free(out);
 					return NULL;

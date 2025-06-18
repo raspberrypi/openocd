@@ -191,26 +191,26 @@ static uint32_t fld(unsigned int dest, unsigned int base, uint16_t offset)
 	return imm_i(offset) | inst_rs1(base) | inst_rd(dest) | MATCH_FLD;
 }
 
-static uint32_t fmv_x_w(unsigned int dest, unsigned int src) __attribute__ ((unused));
-static uint32_t fmv_x_w(unsigned int dest, unsigned int src)
+static uint32_t fmv_x_w(unsigned dest, unsigned src) __attribute__ ((unused));
+static uint32_t fmv_x_w(unsigned dest, unsigned src)
 {
 	return inst_rs1(src) | inst_rd(dest) | MATCH_FMV_X_W;
 }
 
-static uint32_t fmv_x_d(unsigned int dest, unsigned int src) __attribute__ ((unused));
-static uint32_t fmv_x_d(unsigned int dest, unsigned int src)
+static uint32_t fmv_x_d(unsigned dest, unsigned src) __attribute__ ((unused));
+static uint32_t fmv_x_d(unsigned dest, unsigned src)
 {
 	return inst_rs1(src) | inst_rd(dest) | MATCH_FMV_X_D;
 }
 
-static uint32_t fmv_w_x(unsigned int dest, unsigned int src) __attribute__ ((unused));
-static uint32_t fmv_w_x(unsigned int dest, unsigned int src)
+static uint32_t fmv_w_x(unsigned dest, unsigned src) __attribute__ ((unused));
+static uint32_t fmv_w_x(unsigned dest, unsigned src)
 {
 	return inst_rs1(src) | inst_rd(dest) | MATCH_FMV_W_X;
 }
 
-static uint32_t fmv_d_x(unsigned int dest, unsigned int src) __attribute__ ((unused));
-static uint32_t fmv_d_x(unsigned int dest, unsigned int src)
+static uint32_t fmv_d_x(unsigned dest, unsigned src) __attribute__ ((unused));
+static uint32_t fmv_d_x(unsigned dest, unsigned src)
 {
 	return inst_rs1(src) | inst_rd(dest) | MATCH_FMV_D_X;
 }
@@ -294,10 +294,11 @@ static uint32_t srli(unsigned int dest, unsigned int src, uint8_t shamt)
 	return inst_rs2(shamt) | inst_rs1(src) | inst_rd(dest) | MATCH_SRLI;
 }
 
-static uint32_t fence(void) __attribute__((unused));
-static uint32_t fence(void)
+static uint32_t fence_rw_rw(void) __attribute__((unused));
+static uint32_t fence_rw_rw(void)
 {
-	return MATCH_FENCE;
+	/* fence rw,rw */
+	return MATCH_FENCE | 0x3300000;
 }
 
 static uint32_t auipc(unsigned int dest) __attribute__((unused));
@@ -310,6 +311,12 @@ static uint32_t vsetvli(unsigned int dest, unsigned int src, uint16_t imm) __att
 static uint32_t vsetvli(unsigned int dest, unsigned int src, uint16_t imm)
 {
 	return (bits(imm, 10, 0) << 20) | inst_rs1(src) | inst_rd(dest) | MATCH_VSETVLI;
+}
+
+static uint32_t vsetvl(unsigned int rd, unsigned int rs1, unsigned int rs2) __attribute__((unused));
+static uint32_t vsetvl(unsigned int rd, unsigned int rs1, unsigned int rs2)
+{
+	return inst_rd(rd) | inst_rs1(rs1) | inst_rs2(rs2) | MATCH_VSETVL;
 }
 
 static uint32_t vmv_x_s(unsigned int rd, unsigned int vs2) __attribute__((unused));

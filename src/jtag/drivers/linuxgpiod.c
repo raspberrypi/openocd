@@ -673,8 +673,6 @@ static int helper_get_line(enum adapter_gpio_config_index idx)
 
 	gpiod_line_req[idx] = gpiod_chip_request_lines(gpiod_chip[idx], req_cfg, gpiod_line_config[idx]);
 
-	gpiod_request_config_free(req_cfg);
-
 	if (!gpiod_line_req[idx]) {
 		LOG_ERROR("Error requesting gpio line %s", adapter_gpio_get_name(idx));
 		return ERROR_JTAG_INIT_FAILED;

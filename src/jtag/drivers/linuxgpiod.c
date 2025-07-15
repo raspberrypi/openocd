@@ -551,22 +551,23 @@ static bool linuxgpiod_swd_mode_possible(void)
 
 static inline void helper_release(enum adapter_gpio_config_index idx)
 {
-	if (gpiod_line_req[idx]) {
+	/* Cleanup - don't leave lines set to output */
+	if (gpiod_line_req[idx] && gpiod_line_config[idx] && gpiod_line_settings[idx]) {
+		gpiod_line_settings_set_direction(gpiod_line_settings[idx], GPIOD_LINE_DIRECTION_INPUT);
+		gpiod_line_config_add_line_settings(gpiod_line_config[idx],
+						&adapter_gpio_config[idx].gpio_num, 1,
+						gpiod_line_settings[idx]);
+		gpiod_line_request_reconfigure_lines(gpiod_line_req[idx], gpiod_line_config[idx]);
+	}
+
+	gpiod_line_settings_free(gpiod_line_settings[idx]);
+	gpiod_line_config_free(gpiod_line_config[idx]);
+
+	if (gpiod_line_req[idx])
 		gpiod_line_request_release(gpiod_line_req[idx]);
-		gpiod_line_req[idx] = NULL;
-	}
-	if (gpiod_line_config[idx]) {
-		gpiod_line_config_free(gpiod_line_config[idx]);
-		gpiod_line_config[idx] = NULL;
-	}
-	if (gpiod_line_settings[idx]) {
-		gpiod_line_settings_free(gpiod_line_settings[idx]);
-		gpiod_line_settings[idx] = NULL;
-	}
-	if (gpiod_chip[idx]) {
+
+	if (gpiod_chip[idx])
 		gpiod_chip_close(gpiod_chip[idx]);
-		gpiod_chip[idx] = NULL;
-	}
 }
 
 static int linuxgpiod_quit(void)

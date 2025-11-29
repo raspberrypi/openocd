@@ -2806,7 +2806,6 @@ static int gdb_query_packet(struct connection *connection,
 			cmd_ctx->current_target_override = saved_target_override;
 
 			current_gdb_connection = NULL;
-			target_call_timer_callbacks_now();
 			gdb_connection->output_flag = GDB_OUTPUT_NO;
 			free(cmd);
 			if (retval == JIM_RETURN)
@@ -2820,6 +2819,9 @@ static int gdb_query_packet(struct connection *connection,
 			} else {
 				retmsg = strdup(cretmsg);
 			}
+
+			target_call_timer_callbacks_now();
+
 			if (!retmsg)
 				return ERROR_GDB_BUFFER_TOO_SMALL;
 

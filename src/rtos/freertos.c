@@ -39,6 +39,8 @@ struct freertos_params {
 	const struct rtos_register_stacking *stacking_info_cm3;
 	const struct rtos_register_stacking *stacking_info_cm4f;
 	const struct rtos_register_stacking *stacking_info_cm4f_fpu;
+	const struct rtos_register_stacking *stacking_info_cm33;
+	const struct rtos_register_stacking *stacking_info_cm33_fpu;
 };
 
 static const struct freertos_params freertos_params_list[] = {
@@ -55,6 +57,8 @@ static const struct freertos_params freertos_params_list[] = {
 	&rtos_standard_cortex_m3_stacking,	/* stacking_info */
 	&rtos_standard_cortex_m4f_stacking,
 	&rtos_standard_cortex_m4f_fpu_stacking,
+	&rtos_standard_cortex_m33_stacking,
+	&rtos_standard_cortex_m33_fpu_stacking,
 	},
 	{
 	"hla_target",			/* target_name */
@@ -69,6 +73,8 @@ static const struct freertos_params freertos_params_list[] = {
 	&rtos_standard_cortex_m3_stacking,	/* stacking_info */
 	&rtos_standard_cortex_m4f_stacking,
 	&rtos_standard_cortex_m4f_fpu_stacking,
+	&rtos_standard_cortex_m33_stacking,
+	&rtos_standard_cortex_m33_fpu_stacking,
 	},
 };
 
@@ -417,9 +423,35 @@ static int freertos_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
 										thread_id + param->thread_stack_offset,
 										stack_ptr);
 
+	struct armv7m_common *armv7m_target = target_to_armv7m(rtos->target);
+
+	/* ARMv8-M FreeRTOS ports (Cortex-M33/M23, e.g. RP2350_ARM_NTZ) always push
+	 * two extra software-saved words (PSPLIM, then EXC_RETURN) ahead of R4-R11,
+	 * so both the EXC_RETURN position and all register offsets differ from the
+	 * classic Cortex-M3/M4F layouts. The software-saved EXC_RETURN (at offset
+	 * 0x04) is the authoritative indicator of whether the extended FPU frame
+	 * was stacked, so use it directly here. Note we deliberately do NOT gate
+	 * this on the armv7m FPU detection below (fp_feature / CPACR): that probe
+	 * does not reliably report the FPU on ARMv8-M cores, and getting it wrong
+	 * would silently misread every FPU-frame task with the basic layout. */
+	if (is_armv7m(armv7m_target) && armv7m_target->arm.arch == ARM_ARCH_V8M) {
+		uint32_t exc_return = 0;
+		retval = target_read_u32(rtos->target, stack_ptr + 0x04, &exc_return);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("Error reading EXC_RETURN from FreeRTOS thread stack");
+			return retval;
+		}
+		/* EXC_RETURN bit 4 == 0 means the extended (FPU) frame is in use. */
+		const struct rtos_register_stacking *stacking;
+		if ((exc_return & 0x10) == 0)
+			stacking = param->stacking_info_cm33_fpu;
+		else
+			stacking = param->stacking_info_cm33;
+		return rtos_generic_stack_read(rtos->target, stacking, stack_ptr, reg_list, num_regs);
+	}
+
 	/* Check for armv7m with *enabled* FPU, i.e. a Cortex-M4F */
 	int cm4_fpu_enabled = 0;
-	struct armv7m_common *armv7m_target = target_to_armv7m(rtos->target);
 	if (is_armv7m(armv7m_target)) {
 		if ((armv7m_target->fp_feature == FPV4_SP) || (armv7m_target->fp_feature == FPV5_SP) ||
 				(armv7m_target->fp_feature == FPV5_DP)) {

@@ -18,6 +18,7 @@
 #include <jtag/interface.h>
 #include <transport/transport.h>
 #include "bitbang.h"
+#include "linuxgpiod.h"
 
 /*
  * In case of libgpiod v1, use as much as possible API from v2 plus
@@ -502,7 +503,7 @@ static const struct bitbang_interface linuxgpiod_bitbang = {
  *
  * (1) assert or (0) deassert reset lines
  */
-static int linuxgpiod_reset(int trst, int srst)
+int linuxgpiod_reset(int trst, int srst)
 {
 	int retval1 = 0, retval2 = 0;
 
@@ -572,7 +573,7 @@ static inline void helper_release(enum adapter_gpio_config_index idx)
 		gpiod_chip_close(gpiod_chip[idx]);
 }
 
-static int linuxgpiod_quit(void)
+int linuxgpiod_quit(void)
 {
 	LOG_DEBUG("linuxgpiod_quit");
 	for (int i = 0; i < ADAPTER_GPIO_IDX_NUM; ++i)
@@ -581,7 +582,7 @@ static int linuxgpiod_quit(void)
 	return ERROR_OK;
 }
 
-static int helper_get_line(enum adapter_gpio_config_index idx)
+int linuxgpiod_helper_get_line(enum adapter_gpio_config_index idx)
 {
 	struct gpiod_request_config *req_cfg = NULL;
 	char chip_path[24];
@@ -703,11 +704,11 @@ static int linuxgpiod_init(void)
 			goto out_error;
 		}
 
-		if (helper_get_line(ADAPTER_GPIO_IDX_TDO) != ERROR_OK
-				|| helper_get_line(ADAPTER_GPIO_IDX_TDI) != ERROR_OK
-				|| helper_get_line(ADAPTER_GPIO_IDX_TCK) != ERROR_OK
-				|| helper_get_line(ADAPTER_GPIO_IDX_TMS) != ERROR_OK
-				|| helper_get_line(ADAPTER_GPIO_IDX_TRST) != ERROR_OK)
+		if (linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_TDO) != ERROR_OK
+				|| linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_TDI) != ERROR_OK
+				|| linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_TCK) != ERROR_OK
+				|| linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_TMS) != ERROR_OK
+				|| linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_TRST) != ERROR_OK)
 			goto out_error;
 	}
 
@@ -725,21 +726,21 @@ static int linuxgpiod_init(void)
 		 * configured to send the swdio signal from the target to the GPIO.
 		 */
 		if (adapter_gpio_config[ADAPTER_GPIO_IDX_SWDIO].init_state == ADAPTER_GPIO_INIT_STATE_INPUT) {
-			retval1 = helper_get_line(ADAPTER_GPIO_IDX_SWDIO);
-			retval2 = helper_get_line(ADAPTER_GPIO_IDX_SWDIO_DIR);
+			retval1 = linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SWDIO);
+			retval2 = linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SWDIO_DIR);
 		} else {
-			retval1 = helper_get_line(ADAPTER_GPIO_IDX_SWDIO_DIR);
-			retval2 = helper_get_line(ADAPTER_GPIO_IDX_SWDIO);
+			retval1 = linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SWDIO_DIR);
+			retval2 = linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SWDIO);
 		}
 		if (retval1 != ERROR_OK || retval2 != ERROR_OK)
 			goto out_error;
 
-		if (helper_get_line(ADAPTER_GPIO_IDX_SWCLK) != ERROR_OK)
+		if (linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SWCLK) != ERROR_OK)
 			goto out_error;
 	}
 
-	if (helper_get_line(ADAPTER_GPIO_IDX_SRST) != ERROR_OK
-			|| helper_get_line(ADAPTER_GPIO_IDX_LED) != ERROR_OK)
+	if (linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_SRST) != ERROR_OK
+			|| linuxgpiod_helper_get_line(ADAPTER_GPIO_IDX_LED) != ERROR_OK)
 		goto out_error;
 
 	return ERROR_OK;

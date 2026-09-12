@@ -286,19 +286,17 @@ static int last_swdio;
 static bool last_stored;
 static bool swdio_input;
 
-static const struct adapter_gpio_config *adapter_gpio_config;
-
 /* Helper to get/set a single line */
 static int linuxgpiod_line_get_value(enum adapter_gpio_config_index idx)
 {
 	return gpiod_line_request_get_value(gpiod_line_req[idx],
-				adapter_gpio_config[idx].gpio_num);
+				adapter_gpio_get_config()[idx].gpio_num);
 }
 
 static int linuxgpiod_line_set_value(enum adapter_gpio_config_index idx, int value)
 {
 	return gpiod_line_request_set_value(gpiod_line_req[idx],
-				adapter_gpio_config[idx].gpio_num,
+				adapter_gpio_get_config()[idx].gpio_num,
 				value);
 }
 
@@ -310,6 +308,7 @@ static int linuxgpiod_line_set_value(enum adapter_gpio_config_index idx, int val
  */
 static bool is_gpio_config_valid(enum adapter_gpio_config_index idx)
 {
+	const struct adapter_gpio_config *adapter_gpio_config = adapter_gpio_get_config();
 	return adapter_gpio_config[idx].chip_num < 1000
 		&& adapter_gpio_config[idx].gpio_num < 10000;
 }
@@ -393,6 +392,7 @@ static int linuxgpiod_swdio_read(void)
 static void linuxgpiod_swdio_drive(bool is_output)
 {
 	int retval;
+	const struct adapter_gpio_config *adapter_gpio_config = adapter_gpio_get_config();
 
 	if (is_output) {
 		if (gpiod_line_req[ADAPTER_GPIO_IDX_SWDIO_DIR]) {
@@ -551,6 +551,8 @@ static bool linuxgpiod_swd_mode_possible(void)
 
 static inline void helper_release(enum adapter_gpio_config_index idx)
 {
+	const struct adapter_gpio_config *adapter_gpio_config = adapter_gpio_get_config();
+
 	/* Cleanup - don't leave lines set to output */
 	if (gpiod_line_req[idx] && gpiod_line_config[idx] && gpiod_line_settings[idx]) {
 		gpiod_line_settings_set_direction(gpiod_line_settings[idx], GPIOD_LINE_DIRECTION_INPUT);
@@ -584,6 +586,7 @@ static int helper_get_line(enum adapter_gpio_config_index idx)
 	struct gpiod_request_config *req_cfg = NULL;
 	char chip_path[24];
 	int rv = 0;
+	const struct adapter_gpio_config *adapter_gpio_config = adapter_gpio_get_config();
 
 	if (!is_gpio_config_valid(idx))
 		return ERROR_OK;
@@ -687,7 +690,7 @@ static int linuxgpiod_init(void)
 	LOG_INFO("Linux GPIOD JTAG/SWD bitbang driver");
 
 	bitbang_interface = &linuxgpiod_bitbang;
-	adapter_gpio_config = adapter_gpio_get_config();
+	const struct adapter_gpio_config *adapter_gpio_config = adapter_gpio_get_config();
 
 	/*
 	 * Configure JTAG/SWD signals. Default directions and initial states are handled

@@ -182,6 +182,12 @@ endif
 if XLNX_PCIE_XVC
 DRIVERFILES += %D%/xlnx-pcie-xvc.c
 endif
+if RP1PIO
+DRIVERFILES += %D%/rp1pio.c
+DRIVERFILES += %D%/rp1pio_hw.c
+%C%_libocdjtagdrivers_la_CPPFLAGS += $(PIOLIB_CFLAGS)
+%C%_libocdjtagdrivers_la_LIBADD += $(PIOLIB_LIBS)
+endif
 if BCM2835GPIO
 DRIVERFILES += %D%/bcm2835gpio.c
 endif
@@ -217,6 +223,7 @@ DRIVERHEADERS = \
 	%D%/libftdi_helper.h \
 	%D%/libusb_helper.h \
 	%D%/linuxgpiod.h \
+	%D%/rp1pio_hw.h \
 	%D%/cmsis_dap.h \
 	%D%/minidriver_imp.h \
 	%D%/mpsse.h \

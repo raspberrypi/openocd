@@ -620,6 +620,10 @@ emulation model of target hardware.
 @item @b{linuxgpiod}
 @* A bitbang JTAG driver using Linux GPIO through library libgpiod.
 
+@item @b{rp1pio}
+@* An SWD driver for the Raspberry Pi 5, generating SWD with a PIO state
+machine in its RP1 I/O controller, through library piolib.
+
 @item @b{sysfsgpio}
 @* A bitbang JTAG driver using Linux legacy sysfs GPIO.
 This is deprecated from Linux v5.3; prefer using @b{linuxgpiod}.
@@ -3489,6 +3493,47 @@ at the end of a transaction. You'll need to confirm this with a scope or meter.
 Try installing 10K resistors on SWDIO and SWDCLK to ground to stop this.
 
 @end itemize
+@end deffn
+
+@deffn {Interface Driver} {rp1pio}
+An SWD driver for the Raspberry Pi 5 (and other devices built around its RP1
+I/O controller), which uses one of RP1's PIO state machines to generate SWD on
+any two of the 40-pin header GPIOs. It is based on the PIO program of the
+Raspberry Pi Debug Probe (Debugprobe), and accesses the PIO hardware through
+the piolib library and the @file{/dev/pio0} device. Whole queues of SWD
+transfers are streamed to the state machine through DMA.
+
+The driver is built if @command{configure} finds piolib with pkg-config
+(module @code{libpio}). For a piolib installation without a pkg-config file,
+the environment variables @env{PIOLIB_CFLAGS} and @env{PIOLIB_LIBS} can be
+passed to @command{configure} instead.
+
+This driver requires a Raspberry Pi kernel of version 6.18.39 or later, whose
+@code{rp1-pio} driver supports DMA write-behind; it reports an error at
+startup on older kernels. The user must have access to @file{/dev/pio0},
+which is normally granted to members of the @code{gpio} group.
+
+The SWD signals are selected with the generic command
+@ref{adapter gpio, @command{adapter gpio}}: @option{swclk} and @option{swdio}
+may be any two different GPIOs in the range 0 to 27, in either order. The
+@option{-chip} option is ignored for these signals, and @option{-active-low}
+is not supported. The pins are switched to PIO while OpenOCD is connected,
+with a pull-up enabled on SWDIO, and are left as inputs without pulls
+afterwards. Any other function assigned to those pins (for example by a
+device tree overlay) is overridden.
+
+The SWCLK frequency is set with @command{adapter speed}, and is limited to
+25 MHz: SWDIO is sampled on the rising edge of SWCLK, and at higher
+frequencies the target's response can no longer be relied upon to arrive
+within one clock period. Direct connection of a 3.3 V target with short wires
+is assumed.
+
+If built with linuxgpiod driver, optional SRST signal can be configured
+with generic command @ref{adapter gpio, @command{adapter gpio}}.
+
+See @file{tcl/interface/raspberrypi5-rp1pio.cfg} for a sample configuration
+file, which uses the same header pins as @file{raspberrypi5-gpiod.cfg}
+(SWCLK on GPIO11, pin 23, and SWDIO on GPIO8, pin 24).
 @end deffn
 
 @deffn {Interface Driver} {linuxgpiod}

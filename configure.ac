@@ -183,6 +183,8 @@ m4_define([SERIAL_PORT_ADAPTERS],
 
 m4_define([LINUXSPIDEV_ADAPTER],
 	[[[linuxspidev], [Linux spidev driver], [LINUXSPIDEV]]])
+m4_define([RP1PIO_ADAPTER],
+	[[[rp1pio], [Raspberry Pi 5 RP1 PIO SWD (piolib)], [RP1PIO]]])
 m4_define([VDEBUG_ADAPTER],
 	[[[vdebug], [Cadence Virtual Debug Interface], [VDEBUG]]])
 
@@ -323,6 +325,7 @@ AC_ARG_ADAPTERS([
   SYSFSGPIO_ADAPTER,
   REMOTE_BITBANG_ADAPTER,
   LINUXSPIDEV_ADAPTER,
+  RP1PIO_ADAPTER,
   SERIAL_PORT_ADAPTERS,
   DUMMY_ADAPTER,
   VDEBUG_ADAPTER,
@@ -675,6 +678,12 @@ PKG_CHECK_MODULES([LIBGPIOD], [libgpiod >= 2.0] , [
 PKG_CHECK_MODULES([LIBJAYLINK], [libjaylink >= 0.2],
 	[use_libjaylink=yes], [use_libjaylink=no])
 
+# piolib (Raspberry Pi RP1 PIO)
+use_piolib=no
+AS_IF([test "x$is_linux" = "xyes"], [
+	PKG_CHECK_MODULES([PIOLIB], [libpio], [use_piolib=yes], [use_piolib=no])
+])
+
 # Arg $1: An array of adapter triplets, used to derive option and variable names for each adapter.
 # Arg $2: Whether the adapters can be enabled, for example, because
 #         their prerequisites are installed in the system.
@@ -713,6 +722,7 @@ PROCESS_ADAPTERS([SERIAL_PORT_ADAPTERS], ["x$can_build_buspirate" = "xyes"],
                                          [internal error: validation should happen beforehand])
 PROCESS_ADAPTERS([LINUXSPIDEV_ADAPTER], ["x$is_linux" = "xyes" -a "x$ac_cv_header_linux_spi_spidev_h" = "xyes"],
                                         [Linux spidev])
+PROCESS_ADAPTERS([RP1PIO_ADAPTER], ["x$use_piolib" = "xyes"], [Linux piolib (Raspberry Pi 5)])
 PROCESS_ADAPTERS([VDEBUG_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([JTAG_DPI_ADAPTER], [true], [unused])
 PROCESS_ADAPTERS([JTAG_VPI_ADAPTER], [true], [unused])
@@ -878,6 +888,7 @@ m4_foreach([adapter], [USB1_ADAPTERS,
 	REMOTE_BITBANG_ADAPTER,
 	LIBJAYLINK_ADAPTERS, PCIE_ADAPTERS, SERIAL_PORT_ADAPTERS,
 	LINUXSPIDEV_ADAPTER,
+	RP1PIO_ADAPTER,
 	VDEBUG_ADAPTER,
 	JTAG_DPI_ADAPTER,
 	JTAG_VPI_ADAPTER,
